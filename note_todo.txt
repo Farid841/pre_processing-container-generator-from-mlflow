@@ -1,0 +1,2 @@
+improve pipeline with dinamic test bry creating an temporaire docker/contaier
+schema in './schema of my goals.png'
