@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
+r"""
 Script to build Docker image by downloading preprocessing from MLflow.
 
 Usage examples:
@@ -24,12 +24,14 @@ Usage examples:
    python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1
 
 2. Build with specific tag:
-   python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 --tag v1.0.0
+   python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+       preprocessing-model-v1 --tag v1.0.0
 
 3. Build with preprocessing in a subdirectory MLflow (e.g., code/preprocessing.py):
-   python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-       --preprocessing-path code/preprocessing.py
-   # Note: All Python files in the directory (processor.py, __init__.py, etc.) will be copied automatically
+   python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+       preprocessing-model-v1 --preprocessing-path code/preprocessing.py
+   # Note: All Python files in the directory (processor.py, __init__.py, etc.)
+   # will be copied automatically
 
 4. Build with custom Dockerfile:
    python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
@@ -46,17 +48,15 @@ Prerequisites:
 - Preprocessing must be uploaded to MLflow with preprocessing.py (and optionally requirements.txt)
 """
 
-import os
+import argparse
+import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-import shutil
-import logging
-import argparse
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "preprocessing.py"):
     """
     Download preprocessing from MLflow.
+
     If preprocessing is in a directory (e.g., code/preprocessing.py), download the entire directory.
 
     Args:
@@ -94,8 +95,7 @@ def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "prepro
         # Download the entire directory
         try:
             artifact_dir_uri = mlflow.artifacts.download_artifacts(
-                run_id=run_id,
-                artifact_path=artifact_dir_path
+                run_id=run_id, artifact_path=artifact_dir_path
             )
             artifact_dir = Path(artifact_dir_uri)
             preprocessing_file = artifact_dir / filename
@@ -117,8 +117,7 @@ def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "prepro
     # Download the artifact (file or directory)
     try:
         artifact_uri = mlflow.artifacts.download_artifacts(
-            run_id=run_id,
-            artifact_path=artifact_path
+            run_id=run_id, artifact_path=artifact_path
         )
     except Exception as e:
         raise RuntimeError(
@@ -153,7 +152,7 @@ def build_docker_image(
     preprocessing_path: str = "preprocessing.py",
     dockerfile_path: str = "docker/Dockerfile",
     build_context: str = ".",
-    python_version: str = None
+    python_version: str = None,
 ):
     """
     Build Docker image with preprocessing from MLflow.
@@ -195,7 +194,9 @@ def build_docker_image(
         'preprocessing-model-v1:latest'
     """
     # 1. Download preprocessing (and its parent directory if in a directory)
-    preprocessing_file, preprocessing_dir = download_preprocessing_from_mlflow(run_id, preprocessing_path)
+    preprocessing_file, preprocessing_dir = download_preprocessing_from_mlflow(
+        run_id, preprocessing_path
+    )
 
     # 2. Use source directory as build context
     # This allows Docker to use cache for the runner which doesn't change
@@ -228,7 +229,7 @@ def build_docker_image(
     else:
         # Copy ONLY the downloaded preprocessing
         shutil.copy(preprocessing_file, preprocessing_temp_dir / "preprocessing.py")
-        logger.info(f"Copied preprocessing.py")
+        logger.info("Copied preprocessing.py")
 
     logger.info(f"Preprocessing ready in: {preprocessing_temp_dir}")
 
@@ -236,9 +237,9 @@ def build_docker_image(
     requirements_installed = False
     try:
         import mlflow
+
         requirements_file = mlflow.artifacts.download_artifacts(
-            run_id=run_id,
-            artifact_path="requirements.txt"
+            run_id=run_id, artifact_path="requirements.txt"
         )
         requirements_path = Path(requirements_file)
 
@@ -248,7 +249,7 @@ def build_docker_image(
 
         if requirements_path.exists():
             shutil.copy(requirements_path, preprocessing_temp_dir / "requirements.txt")
-            logger.info(f"Found and copied requirements.txt")
+            logger.info("Found and copied requirements.txt")
             requirements_installed = True
     except Exception as e:
         logger.warning(f"No requirements.txt found: {e}")
@@ -261,10 +262,9 @@ def build_docker_image(
     if python_version:
         # Replace the FROM python:X.Y-slim line with the specified version
         import re
+
         dockerfile_content = re.sub(
-            r'FROM python:\d+\.\d+-slim',
-            f'FROM python:{python_version}-slim',
-            dockerfile_base
+            r"FROM python:\d+\.\d+-slim", f"FROM python:{python_version}-slim", dockerfile_base
         )
         logger.info(f"Using Python {python_version} (specified via --python-version)")
     else:
@@ -273,7 +273,9 @@ def build_docker_image(
 
     # Add instructions to copy preprocessing
     # Preprocessing will be in preprocessing/ of the source directory (build context)
-    dockerfile_content += "\n# Copy preprocessing (added by build script - only element that changes)\n"
+    dockerfile_content += (
+        "\n# Copy preprocessing (added by build script - only element that changes)\n"
+    )
     dockerfile_content += "COPY preprocessing/ /app/preprocessing/\n"
 
     # Install requirements if they exist
@@ -283,7 +285,9 @@ def build_docker_image(
     if requirements_installed:
         dockerfile_content += "\n# Install preprocessing requirements\n"
         dockerfile_content += "# This layer will be rebuilt only if requirements.txt changes\n"
-        dockerfile_content += "RUN pip install --no-cache-dir -r /app/preprocessing/requirements.txt\n"
+        dockerfile_content += (
+            "RUN pip install --no-cache-dir -r /app/preprocessing/requirements.txt\n"
+        )
 
     # Create a temporary Dockerfile in the source directory
     temp_dockerfile = base_path / ".Dockerfile.tmp"
@@ -303,7 +307,10 @@ def build_docker_image(
 
     # Copy requirements.txt if it exists
     if requirements_installed:
-        shutil.copy(preprocessing_temp_dir / "requirements.txt", preprocessing_source_dir / "requirements.txt")
+        shutil.copy(
+            preprocessing_temp_dir / "requirements.txt",
+            preprocessing_source_dir / "requirements.txt",
+        )
 
     # 6. Build Docker image with source directory as context
     # Docker will use cache for runner layers that don't change
@@ -312,12 +319,21 @@ def build_docker_image(
     logger.info("Note: Docker cache will be used for runner layers (they don't change)")
 
     try:
-        subprocess.run([
-            "docker", "build",
-            "-t", image_full_name,
-            "-f", str(temp_dockerfile),
-            str(base_path)  # Build context = source directory (runner doesn't change)
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "-t",
+                image_full_name,
+                "-f",
+                str(temp_dockerfile),
+                str(base_path),  # Build context = source directory (runner doesn't change)
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
 
         logger.info(f"✅ Image built successfully: {image_full_name}")
 
@@ -331,12 +347,13 @@ def build_docker_image(
 
         # Detect current Python version from Dockerfile
         import re
-        current_python_match = re.search(r'FROM python:(\d+\.\d+)-slim', dockerfile_content)
+
+        current_python_match = re.search(r"FROM python:(\d+\.\d+)-slim", dockerfile_content)
         if current_python_match:
             current_python_version = current_python_match.group(1)
 
         # Detect required Python version errors
-        python_version_pattern = r'Requires-Python >=(\d+\.\d+)'
+        python_version_pattern = r"Requires-Python >=(\d+\.\d+)"
         matches = re.findall(python_version_pattern, error_output)
         if matches:
             # Take the highest required Python version
@@ -366,9 +383,15 @@ def build_docker_image(
 
         if e.stdout:
             logger.error("Build output (last 50 lines):")
-            output_lines = e.stdout.split('\n')
+            output_lines = e.stdout.split("\n")
             # Show the most relevant lines
-            relevant_lines = [line for line in output_lines if 'ERROR' in line or 'Requires-Python' in line or 'No matching distribution' in line]
+            relevant_lines = [
+                line
+                for line in output_lines
+                if "ERROR" in line
+                or "Requires-Python" in line
+                or "No matching distribution" in line
+            ]
             if relevant_lines:
                 for line in relevant_lines[-10:]:  # Last 10 error lines
                     logger.error(f"  {line}")
@@ -392,40 +415,42 @@ def build_docker_image(
         logger.warning(f"Could not clean temp files: {e}")
 
     if requirements_installed:
-        logger.info(f"✅ Build complete! Preprocessing + requirements installed.")
-        logger.info(f"   - Runner layers: cached (don't change)")
-        logger.info(f"   - Preprocessing: new")
-        logger.info(f"   - Requirements: installed from MLflow")
+        logger.info("✅ Build complete! Preprocessing + requirements installed.")
+        logger.info("   - Runner layers: cached (don't change)")
+        logger.info("   - Preprocessing: new")
+        logger.info("   - Requirements: installed from MLflow")
     else:
-        logger.info(f"✅ Build complete! Only preprocessing changed, runner layers were cached.")
+        logger.info("✅ Build complete! Only preprocessing changed, runner layers were cached.")
 
     return image_full_name
 
 
 def main():
-    """
+    r"""
     CLI entry point.
 
     Usage examples:
 
     1. Basic build with run_id and image name:
-       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1
+       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+           preprocessing-model-v1
 
     2. Build with specific tag:
-       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 --tag v1.0.0
+       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+           preprocessing-model-v1 --tag v1.0.0
 
     3. Build with preprocessing in a subdirectory MLflow:
-       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-           --preprocessing-path models/preprocessing.py
+       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+           preprocessing-model-v1 --preprocessing-path models/preprocessing.py
 
     4. Build with custom Dockerfile:
-       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-           --dockerfile docker/custom.Dockerfile
+       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+           preprocessing-model-v1 --dockerfile docker/custom.Dockerfile
 
     5. Complete example with all options:
        export MLFLOW_TRACKING_URI="http://127.0.0.1:5000"
-       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-           --tag latest \\
+       python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+           preprocessing-model-v1 --tag latest \\
            --preprocessing-path preprocessing.py \\
            --dockerfile docker/Dockerfile
     """
@@ -438,50 +463,45 @@ Examples:
   python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1
 
   # Build with tag
-  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 --tag v1.0.0
+  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+      preprocessing-model-v1 --tag v1.0.0
 
   # Build with preprocessing in a subdirectory (e.g., code/preprocessing.py)
   # All Python files in the directory will be copied automatically
-  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-      --preprocessing-path code/preprocessing.py
+  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+      preprocessing-model-v1 --preprocessing-path code/preprocessing.py
 
   # Build with specific Python version (if requirements need Python >=3.11)
-  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe preprocessing-model-v1 \\
-      --python-version 3.11
+  python build_scripts/build_image.py e6c1131f4673449aa688ed1ffc3abbbe \\
+      preprocessing-model-v1 --python-version 3.11
 
 Prerequisites:
   - MLflow installed: pip install mlflow
-  - MLFLOW_TRACKING_URI configured: export MLFLOW_TRACKING_URI="http://127.0.0.1:5000"
+  - MLFLOW_TRACKING_URI configured:
+    export MLFLOW_TRACKING_URI="http://127.0.0.1:5000"
   - Docker installed and running
-        """
+        """,
     )
-    parser.add_argument(
-        "run_id",
-        help="MLflow run ID"
-    )
-    parser.add_argument(
-        "image_name",
-        help="Docker image name (e.g., preprocessing-model-v1)"
-    )
-    parser.add_argument(
-        "--tag", "-t",
-        default="latest",
-        help="Docker image tag (default: latest)"
-    )
+    parser.add_argument("run_id", help="MLflow run ID")
+    parser.add_argument("image_name", help="Docker image name (e.g., preprocessing-model-v1)")
+    parser.add_argument("--tag", "-t", default="latest", help="Docker image tag (default: latest)")
     parser.add_argument(
         "--preprocessing-path",
         default="preprocessing.py",
-        help="Path to preprocessing artifact in MLflow (default: preprocessing.py)"
+        help="Path to preprocessing artifact in MLflow (default: preprocessing.py)",
     )
     parser.add_argument(
         "--dockerfile",
         default="docker/Dockerfile",
-        help="Path to base Dockerfile (default: docker/Dockerfile)"
+        help="Path to base Dockerfile (default: docker/Dockerfile)",
     )
     parser.add_argument(
         "--python-version",
         default=None,
-        help="Python version to use (e.g., 3.11, 3.12). Default: use version from Dockerfile (3.10)"
+        help=(
+            "Python version to use (e.g., 3.11, 3.12). "
+            "Default: use version from Dockerfile (3.10)"
+        ),
     )
 
     args = parser.parse_args()
@@ -493,12 +513,12 @@ Prerequisites:
             image_tag=args.tag,
             preprocessing_path=args.preprocessing_path,
             dockerfile_path=args.dockerfile,
-            python_version=args.python_version
+            python_version=args.python_version,
         )
     except Exception as e:
         logger.error(f"Build failed: {e}")
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
