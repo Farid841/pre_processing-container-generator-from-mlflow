@@ -1,0 +1,9 @@
+# Exemple de requirements.txt pour un preprocessing
+# Ce fichier peut être uploadé dans MLflow avec preprocessing.py
+
+# Exemple: preprocessing avec pandas et numpy
+pandas>=1.3.0
+numpy>=1.21.0
+
+# Exemple: preprocessing avec sklearn
+# scikit-learn>=1.0.0

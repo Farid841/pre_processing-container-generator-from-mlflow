@@ -1,0 +1,3 @@
+# Requirements pour le build script et le runner
+mlflow>=2.0.0
+fastavro>=1.4.0
