@@ -24,6 +24,8 @@ dist/
 *.jsonl
 output.*
 
+# Images de schéma/conception
+
 # IDE
 .vscode/
 .idea/
@@ -41,3 +43,10 @@ htmlcov/
 *.cover
 .hypothesis/
 .tox/
+
+# Environment variables
+.env
+
+# MLflow
+mlruns/
+# preprocessing_mlflow/

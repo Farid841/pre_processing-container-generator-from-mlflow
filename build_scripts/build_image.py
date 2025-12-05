@@ -61,15 +61,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "preprocessing.py"):
+def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = None):
     """
     Download preprocessing from MLflow.
 
     If preprocessing is in a directory (e.g., code/preprocessing.py), download the entire directory.
+    If artifact_path is None, automatically searches in common locations.
 
     Args:
         run_id: MLflow run ID
-        artifact_path: Artifact path (e.g., "preprocessing.py" or "code/preprocessing.py")
+        artifact_path: Artifact path (e.g., "preprocessing.py" or "code/preprocessing.py").
+                       If None, automatically searches in:
+                       preprocessing/preprocessing.py, preprocessing.py,
+                       pre_processing/pre_processing.py
 
     Returns:
         tuple: (path to preprocessing.py file, path to parent directory or None)
@@ -81,6 +85,44 @@ def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "prepro
             "MLflow not installed. Install with: pip install mlflow\n"
             "Also set MLFLOW_TRACKING_URI environment variable."
         )
+
+    # Auto-detect preprocessing path if not provided
+    if artifact_path is None:
+        logger.info("No preprocessing path specified, searching automatically...")
+        search_paths = [
+            "preprocessing/preprocessing.py",
+            "preprocessing.py",
+            "pre_processing/pre_processing.py",
+        ]
+
+        for path in search_paths:
+            try:
+                artifact_uri = mlflow.artifacts.download_artifacts(
+                    run_id=run_id, artifact_path=path
+                )
+                artifact_path_obj = Path(artifact_uri)
+
+                # If it's a directory, check for preprocessing.py inside
+                if artifact_path_obj.is_dir():
+                    preprocessing_file = artifact_path_obj / "preprocessing.py"
+                    if preprocessing_file.exists():
+                        logger.info(f"Auto-detected preprocessing at: {path}")
+                        artifact_path = path
+                        break
+
+                # If it's a file and named preprocessing.py
+                if artifact_path_obj.is_file() and artifact_path_obj.name == "preprocessing.py":
+                    logger.info(f"Auto-detected preprocessing at: {path}")
+                    artifact_path = path
+                    break
+            except Exception:
+                continue
+
+        if artifact_path is None:
+            raise FileNotFoundError(
+                f"Could not find preprocessing.py in MLflow run '{run_id}'. "
+                f"Searched in: {', '.join(search_paths)}"
+            )
 
     logger.info(f"Downloading preprocessing from MLflow run: {run_id}, artifact: {artifact_path}")
 
@@ -145,14 +187,93 @@ def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = "prepro
     return artifact_path_obj, None
 
 
+def get_model_info_from_mlflow(run_id: str):
+    """
+    Get model name and version from MLflow run.
+
+    Args:
+        run_id: MLflow run ID
+
+    Returns:
+        tuple: (model_name, version, type_name) where:
+            - model_name: Name of the model
+            - version: Version string (from tags or run_id)
+            - type_name: "preprocessing" or "model" (from tags or default "preprocessing")
+    """
+    try:
+        import mlflow
+
+        run = mlflow.get_run(run_id)
+
+        # Get model name from tags or params
+        model_name = (
+            run.data.tags.get("model_name")
+            or run.data.tags.get("mlflow.runName")
+            or run.data.params.get("model_name")
+            or "unknown-model"
+        )
+
+        # Get version from tags or use run_id as fallback
+        version = (
+            run.data.tags.get("version")
+            or run.data.tags.get("model_version")
+            or run_id[:8]  # Use first 8 chars of run_id as version
+        )
+
+        # Get type (preprocessing or model)
+        type_name = (
+            run.data.tags.get("type")
+            or run.data.tags.get("component_type")
+            or "preprocessing"  # Default to preprocessing
+        )
+
+        logger.info(
+            f"Retrieved from MLflow - Model: {model_name}, Version: {version}, Type: {type_name}"
+        )
+        return model_name, version, type_name
+
+    except Exception as e:
+        logger.warning(f"Could not get model info from MLflow: {e}. Using defaults.")
+        return "unknown-model", run_id[:8], "preprocessing"
+
+
+def build_image_name(model_name: str, version: str, type_name: str = "preprocessing") -> str:
+    """
+    Build Docker image name from model components.
+
+    Format: {type}-{model_name}-{version}
+    Example: preprocessing-model-v1, model-classifier-v2.0.0
+
+    Args:
+        model_name: Model name
+        version: Version string
+        type_name: Component type (preprocessing or model)
+
+    Returns:
+        str: Image name (without tag)
+    """
+    import re
+
+    # Sanitize names (remove special chars, replace spaces with hyphens)
+    model_name_clean = re.sub(r"[^a-zA-Z0-9-]", "-", model_name.lower())
+    version_clean = re.sub(r"[^a-zA-Z0-9-]", "-", str(version).lower())
+    type_clean = type_name.lower()
+
+    image_name = f"{type_clean}-{model_name_clean}-{version_clean}"
+    return image_name
+
+
 def build_docker_image(
     run_id: str,
     image_name: str,
     image_tag: str = "latest",
-    preprocessing_path: str = "preprocessing.py",
+    preprocessing_path: str = None,
     dockerfile_path: str = "docker/Dockerfile",
     build_context: str = ".",
     python_version: str = None,
+    model_name: str = None,
+    model_version: str = None,
+    component_type: str = "preprocessing",
 ):
     """
     Build Docker image with preprocessing from MLflow.
@@ -165,6 +286,9 @@ def build_docker_image(
         dockerfile_path: Path to base Dockerfile
         build_context: Docker build context
         python_version: Python version (e.g., "3.11", "3.12"). If None, uses version from Dockerfile
+        model_name: Model name (for Kafka topic naming)
+        model_version: Model version (for Kafka topic naming)
+        component_type: Component type (preprocessing or model)
 
     Returns:
         str: Full Docker image name (e.g., "preprocessing-model-v1:latest")
@@ -287,6 +411,17 @@ def build_docker_image(
         dockerfile_content += "# This layer will be rebuilt only if requirements.txt changes\n"
         dockerfile_content += (
             "RUN pip install --no-cache-dir -r /app/preprocessing/requirements.txt\n"
+        )
+
+    # Add environment variables for model info (for Kafka topic naming)
+    if model_name and model_version:
+        dockerfile_content += "\n# Model information (for Kafka topic naming)\n"
+        dockerfile_content += f"ENV MODEL_NAME={model_name}\n"
+        dockerfile_content += f"ENV MODEL_VERSION={model_version}\n"
+        dockerfile_content += f"ENV COMPONENT_TYPE={component_type}\n"
+        logger.info(
+            f"Added environment variables: MODEL_NAME={model_name}, "
+            f"MODEL_VERSION={model_version}, COMPONENT_TYPE={component_type}"
         )
 
     # Create a temporary Dockerfile in the source directory
@@ -483,12 +618,24 @@ Prerequisites:
         """,
     )
     parser.add_argument("run_id", help="MLflow run ID")
-    parser.add_argument("image_name", help="Docker image name (e.g., preprocessing-model-v1)")
+    parser.add_argument(
+        "image_name",
+        nargs="?",
+        default="auto",
+        help=(
+            "Docker image name (e.g., preprocessing-model-v1). "
+            "Use 'auto' to generate from MLflow metadata (default: auto)"
+        ),
+    )
     parser.add_argument("--tag", "-t", default="latest", help="Docker image tag (default: latest)")
     parser.add_argument(
         "--preprocessing-path",
-        default="preprocessing.py",
-        help="Path to preprocessing artifact in MLflow (default: preprocessing.py)",
+        default=None,
+        help=(
+            "Path to preprocessing artifact in MLflow (default: auto-detect). "
+            "Auto-detection searches in: preprocessing/preprocessing.py, preprocessing.py, "
+            "pre_processing/pre_processing.py"
+        ),
     )
     parser.add_argument(
         "--dockerfile",
@@ -507,16 +654,33 @@ Prerequisites:
     args = parser.parse_args()
 
     try:
-        build_docker_image(
+        # Get model info from MLflow
+        model_name, version, type_name = get_model_info_from_mlflow(args.run_id)
+
+        # Build image name if auto or not provided
+        if args.image_name == "auto" or not args.image_name:
+            image_name = build_image_name(model_name, version, type_name)
+            logger.info(f"Auto-generated image name: {image_name}")
+        else:
+            image_name = args.image_name
+            logger.info(f"Using provided image name: {image_name}")
+
+        # Build Docker image
+        full_image_name = build_docker_image(
             run_id=args.run_id,
-            image_name=args.image_name,
+            image_name=image_name,
             image_tag=args.tag,
             preprocessing_path=args.preprocessing_path,
             dockerfile_path=args.dockerfile,
             python_version=args.python_version,
+            model_name=model_name,
+            model_version=version,
+            component_type=type_name,
         )
+
+        logger.info(f"Successfully built: {full_image_name}")
     except Exception as e:
-        logger.error(f"Build failed: {e}")
+        logger.error(f"Build failed: {e}", exc_info=True)
         sys.exit(1)
 
 

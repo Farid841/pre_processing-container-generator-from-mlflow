@@ -24,8 +24,10 @@ Supports input formats: JSONL (stdin) and Avro files.
 import importlib.util
 import json
 import logging
+import os
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -269,6 +271,144 @@ def _read_json_from_stdin():
                     continue
 
 
+def get_model_info() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Get model name, version, and type from environment variables.
+
+    Returns:
+        tuple: (model_name, version, type_name)
+    """
+    model_name = os.getenv("MODEL_NAME")
+    version = os.getenv("MODEL_VERSION")
+    type_name = os.getenv("COMPONENT_TYPE", "preprocessing")
+
+    return model_name, version, type_name
+
+
+def build_kafka_topic(model_name: str, version: str, suffix: str = "cleaned") -> str:
+    """
+    Build Kafka topic name from model components.
+
+    Format: {model_name}-{version}-{suffix}
+    Example: model-v1-cleaned, model-v1_pre-processed
+
+    Args:
+        model_name: Model name
+        version: Version string
+        suffix: Topic suffix (default: "cleaned", can be "pre-processed" or custom)
+
+    Returns:
+        str: Kafka topic name
+    """
+    import re
+
+    # Sanitize for Kafka topic naming (Kafka topics: alphanumeric, -, _, .)
+    model_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", model_name.lower())
+    version_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", str(version).lower())
+    suffix_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", str(suffix).lower())
+
+    topic = f"{model_clean}-{version_clean}-{suffix_clean}"
+    return topic
+
+
+def create_kafka_producer(bootstrap_servers: str, topic_name: str) -> Optional[object]:
+    """
+    Create Confluent Kafka producer.
+
+    Args:
+        bootstrap_servers: Kafka broker addresses (comma-separated)
+        topic_name: Kafka topic name
+
+    Returns:
+        Producer instance or None if Kafka not available
+    """
+    try:
+        from confluent_kafka import Producer
+    except ImportError:
+        logger.warning("confluent-kafka not installed. Install with: pip install confluent-kafka")
+        return None
+
+    try:
+        config = {
+            "bootstrap.servers": bootstrap_servers,
+            "client.id": "preprocessing-runner",
+            "acks": "all",  # Wait for all replicas to acknowledge
+            "retries": 3,
+            "max.in.flight.requests.per.connection": 1,
+        }
+
+        # Add SASL config if needed
+        security_protocol = os.getenv("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
+        if security_protocol in ["SASL_PLAINTEXT", "SASL_SSL"]:
+            config["security.protocol"] = security_protocol
+            config["sasl.mechanism"] = os.getenv("KAFKA_SASL_MECHANISM", "PLAIN")
+            config["sasl.username"] = os.getenv("KAFKA_SASL_USERNAME", "")
+            config["sasl.password"] = os.getenv("KAFKA_SASL_PASSWORD", "")
+
+        # SSL config if needed
+        if security_protocol in ["SSL", "SASL_SSL"]:
+            ssl_ca_location = os.getenv("KAFKA_SSL_CA_LOCATION")
+            ssl_cert_location = os.getenv("KAFKA_SSL_CERT_LOCATION")
+            ssl_key_location = os.getenv("KAFKA_SSL_KEY_LOCATION")
+
+            if ssl_ca_location:
+                config["ssl.ca.location"] = ssl_ca_location
+            if ssl_cert_location:
+                config["ssl.certificate.location"] = ssl_cert_location
+            if ssl_key_location:
+                config["ssl.key.location"] = ssl_key_location
+
+        producer = Producer(config)
+        logger.info(
+            f"Confluent Kafka producer created for topic: {topic_name}, "
+            f"bootstrap: {bootstrap_servers}"
+        )
+        return producer
+
+    except Exception as e:
+        logger.error(f"Failed to create Kafka producer: {e}")
+        return None
+
+
+def delivery_callback(err, msg):
+    """Handle Kafka message delivery confirmation."""
+    if err:
+        logger.error(f"Message delivery failed: {err}")
+    else:
+        logger.info(
+            f"✅ Message delivered to {msg.topic()} [{msg.partition()}] at offset {msg.offset()}"
+        )
+
+
+def send_to_kafka_or_stdout(producer, topic_name: str, data: dict):
+    """
+    Send data to Kafka or stdout (fallback).
+
+    Args:
+        producer: Confluent Kafka Producer instance or None
+        topic_name: Kafka topic name
+        data: Data dictionary to send
+    """
+    json_str = json.dumps(data, ensure_ascii=False)
+
+    if producer:
+        try:
+            # Send to Kafka (async)
+            producer.produce(topic_name, value=json_str.encode("utf-8"), callback=delivery_callback)
+            # Poll to trigger delivery callbacks
+            producer.poll(0)
+            logger.info(f"📤 Produced message to Kafka topic '{topic_name}'")
+        except Exception as e:
+            logger.error(f"Failed to send to Kafka: {e}. Falling back to stdout")
+            # Fallback to stdout
+            print(json_str)
+            sys.stdout.flush()
+    else:
+        # No Kafka producer, use stdout
+        print(json_str)
+        sys.stdout.flush()
+
+
 def main():
     """
     Run preprocessing on input data.
@@ -323,20 +463,66 @@ def main():
             else:
                 data_generator = _read_json_from_stdin()
 
+        # Initialize Kafka producer if configured
+        kafka_producer = None
+        kafka_topic = None
+        kafka_enabled = os.getenv("KAFKA_ENABLED", "false").lower() == "true"
+
+        if kafka_enabled:
+            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+            if not bootstrap_servers:
+                logger.warning(
+                    "KAFKA_ENABLED=true but KAFKA_BOOTSTRAP_SERVERS not set. Using stdout."
+                )
+            else:
+                # Get model info from environment (set by build script)
+                model_name, version, type_name = get_model_info()
+
+                if model_name and version:
+                    # Get topic suffix from environment (default: "cleaned")
+                    topic_suffix = os.getenv("KAFKA_TOPIC_SUFFIX", "cleaned")
+                    kafka_topic = build_kafka_topic(model_name, version, topic_suffix)
+                    logger.info(
+                        f"Kafka topic: {kafka_topic} "
+                        f"(from MODEL_NAME={model_name}, MODEL_VERSION={version}, "
+                        f"SUFFIX={topic_suffix})"
+                    )
+                else:
+                    # Fallback: use explicit KAFKA_TOPIC or default
+                    kafka_topic = os.getenv("KAFKA_TOPIC", "preprocessing-output")
+                    logger.warning(f"Model info not found. Using KAFKA_TOPIC: {kafka_topic}")
+
+                kafka_producer = create_kafka_producer(bootstrap_servers, kafka_topic)
+
+                if kafka_producer:
+                    logger.info(
+                        f"Kafka enabled. Topic: {kafka_topic}, Bootstrap: {bootstrap_servers}"
+                    )
+                else:
+                    logger.warning("Kafka producer creation failed. Falling back to stdout.")
+        else:
+            logger.info("Kafka disabled. Using stdout for output.")
+
         # Process each record
         for data in data_generator:
             try:
                 # Apply preprocessing
                 result = pre_processing_func(data)
 
-                # Output (to Kafka or stdout)
-                # Format: JSON line by line
-                print(json.dumps(result, ensure_ascii=False))
-                sys.stdout.flush()  # Important for streaming
+                # Output to Kafka or stdout
+                send_to_kafka_or_stdout(kafka_producer, kafka_topic, result)
 
             except Exception as e:
                 logger.error(f"Preprocessing failed: {e}", exc_info=True)
                 continue
+
+        # Flush and close Kafka producer if exists
+        if kafka_producer:
+            try:
+                kafka_producer.flush(timeout=10)
+                logger.info("Kafka producer flushed and closed.")
+            except Exception as e:
+                logger.warning(f"Error flushing Kafka producer: {e}")
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")

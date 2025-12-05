@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir fastavro>=1.4.0
+RUN pip install --no-cache-dir fastavro>=1.4.0 confluent-kafka>=2.3.0
 
 COPY runner/ /app/runner/
 
