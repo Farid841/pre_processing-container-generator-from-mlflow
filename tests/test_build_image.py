@@ -76,7 +76,7 @@ class TestDownloadPreprocessingFromMlflow:
         """Test error when preprocessing file is not found."""
         mock_download.side_effect = Exception("Artifact not found")
 
-        with pytest.raises(RuntimeError, match="Failed to download artifact"):
+        with pytest.raises(RuntimeError, match="Failed to download"):
             build_image.download_preprocessing_from_mlflow("test-run-id", "preprocessing.py")
 
 

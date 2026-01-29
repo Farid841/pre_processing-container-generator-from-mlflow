@@ -50,6 +50,7 @@ Prerequisites:
 
 import argparse
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -61,130 +62,158 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+_mlflow_configured = False
+
+
+def _configure_mlflow_tracking_uri():
+    """
+    Configure MLflow tracking URI with authentication if credentials are provided.
+
+    Reads MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, and MLFLOW_TRACKING_PASSWORD
+    from environment variables and sets up MLflow with HTTP basic auth if needed.
+
+    Only configures once to avoid accumulating credentials.
+    """
+    global _mlflow_configured
+
+    if _mlflow_configured:
+        return
+
+    from urllib.parse import urlparse, urlunparse
+
+    import mlflow
+
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if not tracking_uri:
+        logger.warning(
+            "MLFLOW_TRACKING_URI environment variable is not set. "
+            "MLflow will use the default tracking URI."
+        )
+        _mlflow_configured = True
+        return
+
+    username = os.environ.get("MLFLOW_TRACKING_USERNAME")
+    password = os.environ.get("MLFLOW_TRACKING_PASSWORD")
+
+    # If credentials are provided, include them in the URI
+    if username and password:
+        # Parse the URI to extract components
+        parsed = urlparse(tracking_uri)
+        # Reconstruct URI with credentials: scheme://username:password@host:port
+        if parsed.netloc:
+            authenticated_netloc = f"{username}:{password}@{parsed.netloc}"
+        else:
+            # If no netloc, construct it with credentials
+            authenticated_netloc = f"{username}:{password}@"
+        authenticated_uri = urlunparse(
+            (
+                parsed.scheme,
+                authenticated_netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+        mlflow.set_tracking_uri(authenticated_uri)
+        # Log without password for security
+        display_netloc = parsed.netloc if parsed.netloc else "localhost"
+        logger.info(
+            f"Using MLflow tracking URI with authentication: "
+            f"{parsed.scheme}://{username}:***@{display_netloc}"
+        )
+    else:
+        mlflow.set_tracking_uri(tracking_uri)
+        logger.info(f"Using MLflow tracking URI: {tracking_uri}")
+
+    _mlflow_configured = True
+
+
+def _normalize_artifact_path(artifact_path: str) -> str:
+    """Extract artifact path from S3/file URIs."""
+    if artifact_path.startswith("s3://") or artifact_path.startswith("file://"):
+        if "/artifacts/" in artifact_path:
+            return artifact_path.split("/artifacts/", 1)[1]
+        # Fallback: try to find 'artifacts' in path
+        parts = artifact_path.replace("file://", "").replace("s3://", "").split("/")
+        try:
+            idx = parts.index("artifacts")
+            return "/".join(parts[idx + 1 :])
+        except ValueError:
+            return "/".join(parts[3:]) if artifact_path.startswith("s3://") else artifact_path
+    return artifact_path
+
+
 def download_preprocessing_from_mlflow(run_id: str, artifact_path: str = None):
     """
     Download preprocessing from MLflow.
 
-    If preprocessing is in a directory (e.g., code/preprocessing.py), download the entire directory.
-    If artifact_path is None, automatically searches in common locations.
-
     Args:
         run_id: MLflow run ID
-        artifact_path: Artifact path (e.g., "preprocessing.py" or "code/preprocessing.py").
-                       If None, automatically searches in:
-                       preprocessing/preprocessing.py, preprocessing.py,
-                       pre_processing/pre_processing.py
+        artifact_path: Artifact path (e.g., "code/preprocessing.py"). If None, auto-detects.
 
     Returns:
-        tuple: (path to preprocessing.py file, path to parent directory or None)
+        tuple: (path to preprocessing.py, parent directory or None)
     """
     try:
         import mlflow
     except ImportError:
-        raise ImportError(
-            "MLflow not installed. Install with: pip install mlflow\n"
-            "Also set MLFLOW_TRACKING_URI environment variable."
-        )
+        raise ImportError("MLflow not installed. Run: pip install mlflow")
 
-    # Auto-detect preprocessing path if not provided
+    # Configure MLflow tracking URI with authentication
+    _configure_mlflow_tracking_uri()
+
+    # Normalize S3/file URIs
+    if artifact_path:
+        artifact_path = _normalize_artifact_path(artifact_path)
+
+    # Auto-detect if not provided
     if artifact_path is None:
-        logger.info("No preprocessing path specified, searching automatically...")
-        search_paths = [
-            "preprocessing/preprocessing.py",
-            "preprocessing.py",
-            "pre_processing/pre_processing.py",
-        ]
-
-        for path in search_paths:
+        logger.info("Searching for preprocessing.py...")
+        for path in ["preprocessing/preprocessing.py", "preprocessing.py", "code/preprocessing.py"]:
             try:
-                artifact_uri = mlflow.artifacts.download_artifacts(
-                    run_id=run_id, artifact_path=path
-                )
-                artifact_path_obj = Path(artifact_uri)
-
-                # If it's a directory, check for preprocessing.py inside
-                if artifact_path_obj.is_dir():
-                    preprocessing_file = artifact_path_obj / "preprocessing.py"
-                    if preprocessing_file.exists():
-                        logger.info(f"Auto-detected preprocessing at: {path}")
-                        artifact_path = path
-                        break
-
-                # If it's a file and named preprocessing.py
-                if artifact_path_obj.is_file() and artifact_path_obj.name == "preprocessing.py":
-                    logger.info(f"Auto-detected preprocessing at: {path}")
+                uri = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=path)
+                p = Path(uri)
+                if p.is_file() or (p.is_dir() and (p / "preprocessing.py").exists()):
                     artifact_path = path
+                    logger.info(f"Found at: {path}")
                     break
             except Exception:
                 continue
+        if not artifact_path:
+            raise FileNotFoundError(f"preprocessing.py not found in run '{run_id}'")
 
-        if artifact_path is None:
-            raise FileNotFoundError(
-                f"Could not find preprocessing.py in MLflow run '{run_id}'. "
-                f"Searched in: {', '.join(search_paths)}"
-            )
+    logger.info(f"Downloading: {artifact_path}")
 
-    logger.info(f"Downloading preprocessing from MLflow run: {run_id}, artifact: {artifact_path}")
-
-    # Determine if it's a file or directory
-    artifact_dir = None
+    # If path contains directory (e.g., code/preprocessing.py), download the directory
     if "/" in artifact_path:
-        # It's a path with directory (e.g., code/preprocessing.py)
-        parts = artifact_path.split("/")
-        artifact_dir_path = "/".join(parts[:-1])  # E.g., "code"
-        filename = parts[-1]  # E.g., "preprocessing.py"
-
-        # Download the entire directory
+        dir_path, filename = artifact_path.rsplit("/", 1)
         try:
-            artifact_dir_uri = mlflow.artifacts.download_artifacts(
-                run_id=run_id, artifact_path=artifact_dir_path
-            )
-            artifact_dir = Path(artifact_dir_uri)
+            uri = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=dir_path)
+            artifact_dir = Path(uri)
             preprocessing_file = artifact_dir / filename
-
-            if not preprocessing_file.exists():
-                raise FileNotFoundError(
-                    f"{filename} not found in downloaded directory: {artifact_dir_uri}"
-                )
-
-            logger.info(f"Downloaded directory '{artifact_dir_path}' containing {filename}")
-            logger.info(f"Found files in directory: {list(artifact_dir.glob('*.py'))}")
-            return preprocessing_file, artifact_dir
-
+            if preprocessing_file.exists():
+                py_files = [f.name for f in artifact_dir.glob("*.py")]
+                logger.info(f"Downloaded directory with files: {py_files}")
+                return preprocessing_file, artifact_dir
         except Exception as e:
-            # If directory download fails, try downloading the file directly
-            logger.warning(f"Could not download directory '{artifact_dir_path}': {e}")
-            logger.info(f"Trying to download file directly: {artifact_path}")
+            logger.debug(f"Directory download failed: {e}")
 
-    # Download the artifact (file or directory)
+    # Direct download
     try:
-        artifact_uri = mlflow.artifacts.download_artifacts(
-            run_id=run_id, artifact_path=artifact_path
-        )
+        uri = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=artifact_path)
+        p = Path(uri)
+        if p.is_dir():
+            preprocessing_file = p / "preprocessing.py"
+            if preprocessing_file.exists():
+                return preprocessing_file, p
+            raise FileNotFoundError(f"preprocessing.py not in {uri}")
+        return p, None
     except Exception as e:
         raise RuntimeError(
-            f"Failed to download artifact '{artifact_path}' from run '{run_id}': {e}\n"
-            f"Make sure:\n"
-            f"  1. MLFLOW_TRACKING_URI is set correctly\n"
-            f"  2. The run_id exists\n"
-            f"  3. The artifact path is correct"
+            f"Failed to download '{artifact_path}' from run '{run_id}': {e}\n"
+            "Check: MLFLOW_TRACKING_URI, run_id, artifact path"
         )
-
-    artifact_path_obj = Path(artifact_uri)
-
-    # If it's a directory, look for preprocessing.py inside
-    if artifact_path_obj.is_dir():
-        preprocessing_file = artifact_path_obj / "preprocessing.py"
-        if not preprocessing_file.exists():
-            raise FileNotFoundError(
-                f"preprocessing.py not found in downloaded artifact directory: {artifact_uri}"
-            )
-        logger.info(f"Found preprocessing.py in directory: {preprocessing_file}")
-        logger.info(f"Directory contains: {list(artifact_path_obj.glob('*.py'))}")
-        return preprocessing_file, artifact_path_obj
-
-    logger.info(f"Downloaded to: {artifact_uri}")
-    return artifact_path_obj, None
 
 
 def get_model_info_from_mlflow(run_id: str):
@@ -202,6 +231,9 @@ def get_model_info_from_mlflow(run_id: str):
     """
     try:
         import mlflow
+
+        # Configure MLflow tracking URI with authentication
+        _configure_mlflow_tracking_uri()
 
         run = mlflow.get_run(run_id)
 
@@ -362,6 +394,9 @@ def build_docker_image(
     try:
         import mlflow
 
+        # Configure MLflow tracking URI with authentication
+        _configure_mlflow_tracking_uri()
+
         requirements_file = mlflow.artifacts.download_artifacts(
             run_id=run_id, artifact_path="requirements.txt"
         )
@@ -395,23 +430,23 @@ def build_docker_image(
         dockerfile_content = dockerfile_base
         logger.info("Using Python version from Dockerfile (default: 3.10)")
 
-    # Add instructions to copy preprocessing
+    # Add instructions to copy preprocessing (with correct ownership for non-root user)
     # Preprocessing will be in preprocessing/ of the source directory (build context)
     dockerfile_content += (
         "\n# Copy preprocessing (added by build script - only element that changes)\n"
     )
-    dockerfile_content += "COPY preprocessing/ /app/preprocessing/\n"
+    dockerfile_content += "COPY --chown=appuser:appuser preprocessing/ /app/preprocessing/\n"
 
     # Install requirements if they exist
-    # IMPORTANT: Requirements are installed AFTER copying preprocessing
-    # If requirements change, this layer will be rebuilt (normal)
-    # If only preprocessing.py changes (not requirements), this layer will be cached
+    # IMPORTANT: Requirements are installed BEFORE switching to non-root user
+    # So we need to switch back to root temporarily
     if requirements_installed:
-        dockerfile_content += "\n# Install preprocessing requirements\n"
-        dockerfile_content += "# This layer will be rebuilt only if requirements.txt changes\n"
+        dockerfile_content += "\n# Install preprocessing requirements (as root)\n"
+        dockerfile_content += "USER root\n"
         dockerfile_content += (
             "RUN pip install --no-cache-dir -r /app/preprocessing/requirements.txt\n"
         )
+        dockerfile_content += "USER appuser\n"
 
     # Add environment variables for model info (for Kafka topic naming)
     if model_name and model_version:
@@ -454,7 +489,8 @@ def build_docker_image(
     logger.info("Note: Docker cache will be used for runner layers (they don't change)")
 
     try:
-        subprocess.run(
+        # Use Popen for real-time output streaming
+        process = subprocess.Popen(
             [
                 "docker",
                 "build",
@@ -462,78 +498,42 @@ def build_docker_image(
                 image_full_name,
                 "-f",
                 str(temp_dockerfile),
-                str(base_path),  # Build context = source directory (runner doesn't change)
+                str(base_path),
             ],
-            check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
         )
+
+        # Stream output in real-time
+        output_lines = []
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            output_lines.append(line)
+
+        process.wait()
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(
+                process.returncode, "docker build", output="".join(output_lines)
+            )
 
         logger.info(f"✅ Image built successfully: {image_full_name}")
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Docker build failed: {e}")
+        logger.error(f"❌ Docker build failed (exit code: {e.returncode})")
 
-        # Analyze error to detect Python compatibility issues
-        error_output = e.stdout if e.stdout else ""
-        python_version_hint = None
-        current_python_version = None
-
-        # Detect current Python version from Dockerfile
+        # Analyze error output for Python compatibility issues
+        error_output = e.output if hasattr(e, "output") and e.output else ""
         import re
 
-        current_python_match = re.search(r"FROM python:(\d+\.\d+)-slim", dockerfile_content)
-        if current_python_match:
-            current_python_version = current_python_match.group(1)
-
-        # Detect required Python version errors
-        python_version_pattern = r"Requires-Python >=(\d+\.\d+)"
-        matches = re.findall(python_version_pattern, error_output)
+        # Check for Python version requirement
+        matches = re.findall(r"Requires-Python >=(\d+\.\d+)", error_output)
         if matches:
-            # Take the highest required Python version
-            required_versions = [float(v) for v in matches]
-            max_version = max(required_versions)
-            python_version_hint = f"{int(max_version)}.{int((max_version - int(max_version)) * 10)}"
-
-        # Also detect "No matching distribution found" errors
-        if "No matching distribution found" in error_output and not python_version_hint:
-            # Suggest Python 3.11 or 3.12 for recent dependencies
-            if current_python_version and float(current_python_version) < 3.11:
-                python_version_hint = "3.11"
-
-        if python_version_hint:
             logger.error("")
-            logger.error("=" * 70)
-            logger.error("⚠️  PYTHON VERSION COMPATIBILITY ISSUE DETECTED")
-            logger.error("=" * 70)
-            logger.error(f"The requirements.txt requires Python >= {python_version_hint}")
-            logger.error(f"Current Docker image uses Python {current_python_version or '3.10'}")
-            logger.error("")
-            logger.error("💡 SOLUTION: Use --python-version flag:")
-            logger.error(f"   python build_scripts/build_image.py {run_id} {image_name} \\")
-            logger.error(f"       --python-version {python_version_hint}")
-            logger.error("=" * 70)
-            logger.error("")
-
-        if e.stdout:
-            logger.error("Build output (last 50 lines):")
-            output_lines = e.stdout.split("\n")
-            # Show the most relevant lines
-            relevant_lines = [
-                line
-                for line in output_lines
-                if "ERROR" in line
-                or "Requires-Python" in line
-                or "No matching distribution" in line
-            ]
-            if relevant_lines:
-                for line in relevant_lines[-10:]:  # Last 10 error lines
-                    logger.error(f"  {line}")
-            else:
-                # If no specific lines, show the last lines
-                for line in output_lines[-20:]:
-                    logger.error(f"  {line}")
+            logger.error("=" * 60)
+            logger.error("⚠️  PYTHON VERSION ISSUE - Try: --python-version 3.11")
+            logger.error("=" * 60)
 
         raise
 
@@ -652,6 +652,9 @@ Prerequisites:
     )
 
     args = parser.parse_args()
+
+    # Configure MLflow tracking URI with authentication (if credentials are provided)
+    _configure_mlflow_tracking_uri()
 
     try:
         # Get model info from MLflow

@@ -1,0 +1,7 @@
+export MLFLOW_TRACKING_PASSWORD="21igX7t6WM9fdoleNqYyjwTS"
+export MLFLOW_TRACKING_USERNAME="farid.maman@ijclab.in2p3.fr"
+export MLFLOW_TRACKING_URI='http://localhost:5000'
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=minio
+export AWS_SECRET_ACCESS_KEY=minio123
+export AWS_ENDPOINT_URL=http://localhost:9000
