@@ -1,0 +1,51 @@
+# Kafka Bridge Image
+# A reusable sidecar for bridging Kafka topics with REST APIs
+# Supports both Avro and JSON message formats
+
+FROM python:3.12-slim
+
+# Install system dependencies for confluent-kafka
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    librdkafka-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements-bridge.txt /app/
+RUN pip install --no-cache-dir -r requirements-bridge.txt
+
+# Copy the kafka_bridge module
+COPY kafka_bridge/ /app/kafka_bridge/
+
+# Copy schemas
+COPY schemas/ /app/schemas/
+
+# Create non-root user
+RUN useradd -m -u 1000 bridge && chown -R bridge:bridge /app
+USER bridge
+
+# Environment variables with defaults
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
+    INPUT_TOPIC=fink_alerts \
+    INPUT_FORMAT=avro \
+    OUTPUT_TOPIC=preprocessed \
+    OUTPUT_FORMAT=json \
+    API_URL=http://preprocessing-api:8000 \
+    API_ENDPOINT=/preprocess/batch \
+    AVRO_SCHEMA_PATH=/app/schemas/ztf_alert_v3.3.avsc \
+    BATCH_SIZE=10 \
+    BATCH_TIMEOUT_MS=1000 \
+    LOG_LEVEL=INFO \
+    LOG_FORMAT=json \
+    SKIP_CUTOUTS=true \
+    BRIDGE_NAME=kafka-bridge
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "from kafka_bridge.config import BridgeConfig; BridgeConfig().validate(); print('OK')"
+
+# Run the bridge
+ENTRYPOINT ["python", "-m", "kafka_bridge.bridge"]

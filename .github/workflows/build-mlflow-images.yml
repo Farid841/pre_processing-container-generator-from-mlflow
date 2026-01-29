@@ -1,0 +1,100 @@
+name: Build MLflow Images
+
+on:
+  repository_dispatch:
+    types: [mlflow-model-version]
+
+env:
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+  MLFLOW_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+  MLFLOW_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+
+jobs:
+  build-images:
+    name: Build Preprocessing and Model Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mlflow docker
+
+      - name: Extract webhook data
+        id: extract-data
+        run: |
+          RUN_ID="${{ github.event.client_payload.data.run_id }}"
+          MODEL_NAME="${{ github.event.client_payload.data.name }}"
+          MODEL_VERSION="${{ github.event.client_payload.data.version }}"
+
+          echo "run_id=${RUN_ID}" >> $GITHUB_OUTPUT
+          echo "model_name=${MODEL_NAME}" >> $GITHUB_OUTPUT
+          echo "model_version=${MODEL_VERSION}" >> $GITHUB_OUTPUT
+
+          echo "Extracted data:"
+          echo "  RUN_ID: ${RUN_ID}"
+          echo "  MODEL_NAME: ${MODEL_NAME}"
+          echo "  MODEL_VERSION: ${MODEL_VERSION}"
+
+      - name: Verify MLflow connection
+        run: |
+          python -c "
+          import mlflow
+          import os
+          mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI'])
+          try:
+              # Try to list experiments to verify connection
+              experiments = mlflow.search_experiments(max_results=1)
+              print('✅ MLflow connection successful')
+          except Exception as e:
+              print(f'❌ MLflow connection failed: {e}')
+              exit(1)
+          "
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build preprocessing and model Docker images
+        run: |
+          RUN_ID="${{ steps.extract-data.outputs.run_id }}"
+          MODEL_SOURCE="${{ github.event.client_payload.data.source }}"
+
+          # Use build.sh which handles both preprocessing and model builds
+          ./build.sh "${RUN_ID}" \
+            --model-source "${MODEL_SOURCE}" \
+            --tag latest
+
+      - name: Get built image names
+        id: get-image-names
+        run: |
+          MODEL_NAME="${{ steps.extract-data.outputs.model_name }}"
+          MODEL_VERSION="${{ steps.extract-data.outputs.model_version }}"
+
+          # Sanitize for image names
+          PREPROCESSING_IMAGE=$(echo "preprocessing-${MODEL_NAME}-${MODEL_VERSION}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          MODEL_IMAGE=$(echo "model-${MODEL_NAME}-${MODEL_VERSION}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+
+          GITHUB_REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+
+          echo "preprocessing_image=${PREPROCESSING_IMAGE}" >> $GITHUB_OUTPUT
+          echo "model_image=${MODEL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "preprocessing_registry=ghcr.io/${GITHUB_REPO_LOWER}/${PREPROCESSING_IMAGE}" >> $GITHUB_OUTPUT
+          echo "model_registry=ghcr.io/${GITHUB_REPO_LOWER}/${MODEL_IMAGE}" >> $GITHUB_OUTPUT
+
+      - name: Output image info
+        run: |
+          echo "✅ All images built and pushed successfully"
+          echo "Preprocessing: ${{ steps.get-image-names.outputs.preprocessing_registry }}:latest"
+          echo "Model: ${{ steps.get-image-names.outputs.model_registry }}:latest"
