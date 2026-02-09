@@ -192,26 +192,38 @@ class MessageSerializer:
         if output_format == "avro" and output_avro_schema_path:
             self.avro_serializer = AvroSerializer(output_avro_schema_path, logger)
 
-    def _strip_cutouts(self, data: dict) -> dict:
+    def _strip_cutouts(self, data: Any) -> Any:
         """Remove cutout fields to reduce message size.
 
         Cutouts contain large binary FITS images that are often not needed
         for preprocessing/inference.
+
+        Handles both dict and list inputs (for JSON arrays).
         """
         if not self.skip_cutouts:
             return data
 
         cutout_fields = ["cutoutScience", "cutoutTemplate", "cutoutDifference"]
-        return {k: v for k, v in data.items() if k not in cutout_fields}
 
-    def deserialize(self, data: bytes) -> dict:
-        """Deserialize message bytes to Python dict.
+        # Si c'est une liste, traiter chaque élément récursivement
+        if isinstance(data, list):
+            return [self._strip_cutouts(item) for item in data]
+
+        # Si c'est un dict, filtrer les cutouts
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in cutout_fields}
+
+        # Sinon, retourner tel quel (int, str, etc.)
+        return data
+
+    def deserialize(self, data: bytes) -> Any:
+        """Deserialize message bytes to Python dict or list.
 
         Args:
             data: Raw message bytes
 
         Returns:
-            Deserialized Python dict
+            Deserialized Python dict or list (for JSON arrays)
 
         Raises:
             ValueError: If deserialization fails

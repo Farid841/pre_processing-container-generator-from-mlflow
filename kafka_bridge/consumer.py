@@ -5,7 +5,7 @@ Handles message consumption with batching and proper offset management.
 """
 
 import time
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 
@@ -85,7 +85,7 @@ class KafkaConsumerWrapper:
         self,
         batch_size: Optional[int] = None,
         timeout_ms: Optional[int] = None,
-    ) -> List[Tuple[dict, Message]]:
+    ) -> List[Tuple[Any, Message]]:
         """Consume a batch of messages.
 
         Args:
@@ -94,11 +94,12 @@ class KafkaConsumerWrapper:
 
         Returns:
             List of (deserialized_data, original_message) tuples
+            deserialized_data can be dict or list (for JSON arrays)
         """
         batch_size = batch_size or self.config.batch_size
         timeout_ms = timeout_ms or self.config.batch_timeout_ms
 
-        messages: List[Tuple[dict, Message]] = []
+        messages: List[Tuple[Any, Message]] = []
         start_time = time.time() * 1000  # ms
 
         while len(messages) < batch_size:
@@ -115,6 +116,15 @@ class KafkaConsumerWrapper:
 
             try:
                 data = self.serializer.deserialize(msg.value())
+                # Skip None or empty data
+                if data is None:
+                    self.logger.warning(
+                        "Deserialized data is None, skipping",
+                        topic=msg.topic(),
+                        partition=msg.partition(),
+                        offset=msg.offset(),
+                    )
+                    continue
                 messages.append((data, msg))
                 self.logger.record_consumed()
 
@@ -127,6 +137,8 @@ class KafkaConsumerWrapper:
                     partition=msg.partition(),
                     offset=msg.offset(),
                 )
+                # Continue processing other messages
+                continue
                 # Continue processing other messages
                 continue
 
@@ -157,7 +169,7 @@ class KafkaConsumerWrapper:
         self,
         batch_size: Optional[int] = None,
         timeout_ms: Optional[int] = None,
-    ) -> Iterator[List[Tuple[dict, Message]]]:
+    ) -> Iterator[List[Tuple[Any, Message]]]:
         """Iterate over batches of messages indefinitely.
 
         Args:
@@ -166,6 +178,7 @@ class KafkaConsumerWrapper:
 
         Yields:
             Non-empty batches of (data, message) tuples
+            data can be dict or list (for JSON arrays)
         """
         self._running = True
 

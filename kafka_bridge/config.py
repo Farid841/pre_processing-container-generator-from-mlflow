@@ -64,6 +64,9 @@ class BridgeConfig:
     api_endpoint: str = field(
         default_factory=lambda: os.getenv("API_ENDPOINT", "/preprocess/batch")
     )
+    api_health_endpoint: str = field(
+        default_factory=lambda: os.getenv("API_HEALTH_ENDPOINT", "/health")
+    )
     api_timeout: int = field(default_factory=lambda: int(os.getenv("API_TIMEOUT", "30")))
     api_retry_count: int = field(default_factory=lambda: int(os.getenv("API_RETRY_COUNT", "3")))
     api_retry_delay: float = field(

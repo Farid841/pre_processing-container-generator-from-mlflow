@@ -5,7 +5,7 @@ Coordinates consumption, API calls, and production in a continuous loop.
 """
 
 import signal
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from confluent_kafka import Message
 
@@ -99,33 +99,141 @@ class KafkaBridge:
         self.api_client.close()
         self.logger.log_metrics()
 
-    def _extract_key(self, data: dict) -> Optional[str]:
+    def _extract_key(self, data: Any) -> Optional[str]:
         """Extract a message key from the data.
 
         Uses objectId for ZTF alerts, or falls back to candid.
+        Handles both dict and list inputs.
         """
-        return data.get("objectId") or str(data.get("candid", ""))
+        if data is None:
+            return None
+        if isinstance(data, dict):
+            return data.get("objectId") or str(data.get("candid", ""))
+        # For lists or other types, return None (no key)
+        return None
 
     def _process_batch(
         self,
-        batch: List[Tuple[dict, Message]],
+        batch: List[Tuple[Any, Message]],
     ) -> Tuple[List[dict], List[Message]]:
         """Process a batch through the API.
 
         Args:
             batch: List of (data, message) tuples
+                  data can be dict or list (for JSON arrays)
 
         Returns:
             Tuple of (results, messages_to_commit)
         """
-        data_list = [item[0] for item in batch]
-        messages = [item[1] for item in batch]
+        # Handle lists in messages: if a message is a list, flatten it
+        data_list = []
+        messages = []
+
+        self.logger.debug(
+            "Processing batch",
+            batch_size=len(batch),
+            first_data_type=type(batch[0][0]).__name__ if batch else "empty",
+        )
+
+        for data, msg in batch:
+            # Skip None or invalid data
+            if data is None:
+                self.logger.warning(
+                    "Skipping None data in batch",
+                    topic=msg.topic(),
+                    partition=msg.partition(),
+                    offset=msg.offset(),
+                )
+                continue
+
+            if isinstance(data, list):
+                # Message contains a list from preprocessing
+                if len(data) == 0:
+                    self.logger.warning(
+                        "Empty list in message, skipping",
+                        topic=msg.topic(),
+                        partition=msg.partition(),
+                        offset=msg.offset(),
+                    )
+                    continue
+
+                # Check if list contains scalars (float, int) - this is a single feature vector
+                # or if it contains lists/dicts - these are multiple feature vectors
+                first_item = next((item for item in data if item is not None), None)
+
+                if first_item is None:
+                    # All items are None, skip
+                    self.logger.warning(
+                        "All items in list are None, skipping",
+                        topic=msg.topic(),
+                        partition=msg.partition(),
+                        offset=msg.offset(),
+                    )
+                    continue
+
+                if isinstance(first_item, (int, float)) or first_item is None:
+                    # List of scalars = single feature vector
+                    # Replace None with 0.0 to keep the correct shape for the model
+                    cleaned_list = [item if item is not None else 0.0 for item in data]
+                    if cleaned_list:
+                        data_list.append(cleaned_list)
+                        messages.append(msg)
+                    else:
+                        self.logger.warning(
+                            "Empty feature vector, skipping",
+                            topic=msg.topic(),
+                            partition=msg.partition(),
+                            offset=msg.offset(),
+                        )
+                elif isinstance(first_item, list):
+                    # List of lists = multiple feature vectors
+                    for item in data:
+                        if item is not None:
+                            data_list.append(item)
+                            messages.append(msg)
+                elif isinstance(first_item, dict):
+                    # List of dicts = multiple records
+                    for item in data:
+                        if item is not None:
+                            data_list.append(item)
+                            messages.append(msg)
+                else:
+                    # Unknown format, treat as single feature vector
+                    filtered_list = [item for item in data if item is not None]
+                    if filtered_list:
+                        data_list.append(filtered_list)
+                        messages.append(msg)
+            else:
+                # Single dict/list message
+                data_list.append(data)
+                messages.append(msg)
+
+        # Filter out None values before sending to API
+        valid_data_list = []
+        valid_messages = []
+        for i, data_item in enumerate(data_list):
+            if data_item is None:
+                self.logger.warning(
+                    "None data in data_list after processing, skipping",
+                    index=i,
+                )
+                continue
+            valid_data_list.append(data_item)
+            valid_messages.append(messages[i] if i < len(messages) else messages[-1])
+
+        if not valid_data_list:
+            self.logger.error(
+                "No valid data after filtering None values",
+                original_batch_size=len(batch),
+                filtered_size=0,
+            )
+            return [], []
 
         # Check if this is an MLflow model endpoint
         if "/invocations" in self.config.api_endpoint:
-            results = self.api_client.call_mlflow_invocations(data_list)
+            results = self.api_client.call_mlflow_invocations(valid_data_list)
         else:
-            results = self.api_client.call_batch(data_list)
+            results = self.api_client.call_batch(valid_data_list)
 
         if results is None:
             self.logger.error(
@@ -135,45 +243,53 @@ class KafkaBridge:
             return [], []
 
         # Ensure results match input count
-        if len(results) != len(data_list):
+        if len(results) != len(valid_data_list):
             self.logger.warning(
                 "Result count mismatch",
-                input_count=len(data_list),
+                input_count=len(valid_data_list),
                 output_count=len(results),
             )
             # Pad or truncate results
-            if len(results) < len(data_list):
-                results.extend([{}] * (len(data_list) - len(results)))
+            if len(results) < len(valid_data_list):
+                results.extend([{}] * (len(valid_data_list) - len(results)))
             else:
-                results = results[: len(data_list)]
+                results = results[: len(valid_data_list)]
 
-        return results, messages
+        return results, valid_messages
 
     def _produce_results(
         self,
         results: List[dict],
-        original_data: List[dict],
+        original_data: List[Any],
     ) -> None:
         """Produce results to the output topic.
 
         Args:
             results: Processed results from API
-            original_data: Original input data for key extraction
+            original_data: Original input data for key extraction (can be dict or list)
         """
         for i, result in enumerate(results):
+            # Skip None results
+            if result is None:
+                continue
+
+            # Extract source info from original data
+            source_obj = original_data[i] if i < len(original_data) else None
+            source_info = {}
+            if isinstance(source_obj, dict):
+                source_info = {
+                    "objectId": source_obj.get("objectId"),
+                    "candid": source_obj.get("candid"),
+                }
+
             # Enrich result with original data reference
             enriched = {
                 "result": result,
-                "source": {
-                    "objectId": (
-                        original_data[i].get("objectId") if i < len(original_data) else None
-                    ),
-                    "candid": original_data[i].get("candid") if i < len(original_data) else None,
-                },
+                "source": source_info,
                 "bridge": self.config.bridge_name,
             }
 
-            key = self._extract_key(original_data[i]) if i < len(original_data) else None
+            key = self._extract_key(source_obj) if source_obj is not None else None
 
             self.producer.produce(enriched, key=key)
 

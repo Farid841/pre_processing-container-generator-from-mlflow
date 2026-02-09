@@ -14,8 +14,18 @@ Typical usage:
     bridge.run()
 """
 
-from kafka_bridge.bridge import KafkaBridge
-from kafka_bridge.config import BridgeConfig
-
 __version__ = "1.0.0"
 __all__ = ["KafkaBridge", "BridgeConfig"]
+
+
+def __getattr__(name):
+    """Lazy import to avoid RuntimeWarning when running as module."""
+    if name == "KafkaBridge":
+        from kafka_bridge.bridge import KafkaBridge
+
+        return KafkaBridge
+    elif name == "BridgeConfig":
+        from kafka_bridge.config import BridgeConfig
+
+        return BridgeConfig
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
