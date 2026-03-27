@@ -27,7 +27,9 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
+
+from build_scripts.utils import sanitize_kafka_topic as _sanitize_kafka
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -109,15 +111,29 @@ def load_preprocessing():
     )
 
 
-def read_avro_file(file_path):
+def _read_avro_from_reader(reader) -> Iterator[dict]:
+    """Yield all records from an already-opened fastavro reader.
+
+    Args:
+        reader: fastavro.reader instance (wraps any binary IO)
+
+    Yields:
+        dict: Each Avro record
     """
-    Read an Avro file and yield records one by one.
+    schema_name = reader.schema.get("name", "unknown")
+    logger.info(f"Reading Avro with schema: {schema_name}")
+    for record in reader:
+        yield record
+
+
+def read_avro_file(file_path) -> Iterator[dict]:
+    """Read an Avro file and yield records one by one.
 
     Args:
         file_path: Path to the Avro file
 
     Yields:
-        dict: Each Avro record converted to a Python dictionary
+        dict: Each Avro record
 
     Raises:
         ImportError: If fastavro is not installed
@@ -128,21 +144,14 @@ def read_avro_file(file_path):
         raise ImportError("fastavro not installed. Install with: pip install fastavro")
 
     with open(file_path, "rb") as f:
-        reader = fastavro.reader(f)
-        schema = reader.schema
-        schema_name = schema.get("name", "unknown")
-        logger.info(f"Reading Avro file with schema: {schema_name}")
-
-        for record in reader:
-            yield record
+        yield from _read_avro_from_reader(fastavro.reader(f))
 
 
-def read_avro_from_stdin():
-    """
-    Read Avro data from stdin (binary mode).
+def read_avro_from_stdin() -> Iterator[dict]:
+    """Read Avro data from stdin (binary mode).
 
     Yields:
-        dict: Each Avro record converted to a Python dictionary
+        dict: Each Avro record
 
     Raises:
         ImportError: If fastavro is not installed
@@ -152,14 +161,7 @@ def read_avro_from_stdin():
     except ImportError:
         raise ImportError("fastavro not installed. Install with: pip install fastavro")
 
-    # Read from stdin in binary mode
-    reader = fastavro.reader(sys.stdin.buffer)
-    schema = reader.schema
-    schema_name = schema.get("name", "unknown")
-    logger.info(f"Reading Avro from stdin with schema: {schema_name}")
-
-    for record in reader:
-        yield record
+    yield from _read_avro_from_reader(fastavro.reader(sys.stdin.buffer))
 
 
 def is_avro_file(file_path_or_stdin):
@@ -200,67 +202,27 @@ def is_avro_file(file_path_or_stdin):
     return False
 
 
-def _read_json_from_file(file_path):
-    """
-    Read JSON or JSONL data from a file.
+def _parse_json_or_jsonl(content: str) -> Iterator[dict]:
+    """Parse a string as JSON object, JSON array, or JSONL.
+
+    Tries complete-JSON first; falls back to line-by-line JSONL.
 
     Args:
-        file_path: Path to the JSON/JSONL file
+        content: Raw text content (already stripped)
 
     Yields:
-        dict: Each JSON object from the file
+        dict: Each parsed JSON object
     """
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read().strip()
-        if not content:
-            return
-
-        # Try to parse as complete JSON first
-        try:
-            data = json.loads(content)
-            # If it's a list, iterate over items
-            if isinstance(data, list):
-                for item in data:
-                    yield item
-            else:
-                # Otherwise, it's a single JSON object
-                yield data
-        except json.JSONDecodeError:
-            # Otherwise, treat as JSONL (line by line)
-            for line in content.split("\n"):
-                line = line.strip()
-                if line:
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Invalid JSON line ignored: {line[:50]}... ({e})")
-                        continue
-
-
-def _read_json_from_stdin():
-    """
-    Read JSON or JSONL data from stdin.
-
-    Yields:
-        dict: Each JSON object from stdin
-    """
-    # Try to read all content first
-    content = sys.stdin.read().strip()
     if not content:
         return
 
-    # Try to parse as complete JSON
     try:
         data = json.loads(content)
-        # If it's a list, iterate over items
         if isinstance(data, list):
-            for item in data:
-                yield item
+            yield from data
         else:
-            # Otherwise, it's a single JSON object
             yield data
     except json.JSONDecodeError:
-        # Otherwise, treat as JSONL (line by line)
         for line in content.split("\n"):
             line = line.strip()
             if line:
@@ -268,7 +230,28 @@ def _read_json_from_stdin():
                     yield json.loads(line)
                 except json.JSONDecodeError as e:
                     logger.warning(f"Invalid JSON line ignored: {line[:50]}... ({e})")
-                    continue
+
+
+def _read_json_from_file(file_path) -> Iterator[dict]:
+    """Read JSON or JSONL data from a file.
+
+    Args:
+        file_path: Path to the JSON/JSONL file
+
+    Yields:
+        dict: Each JSON object
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        yield from _parse_json_or_jsonl(f.read().strip())
+
+
+def _read_json_from_stdin() -> Iterator[dict]:
+    """Read JSON or JSONL data from stdin.
+
+    Yields:
+        dict: Each JSON object
+    """
+    yield from _parse_json_or_jsonl(sys.stdin.read().strip())
 
 
 def get_model_info() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -286,29 +269,22 @@ def get_model_info() -> Tuple[Optional[str], Optional[str], Optional[str]]:
 
 
 def build_kafka_topic(model_name: str, version: str, suffix: str = "cleaned") -> str:
-    """
-    Build Kafka topic name from model components.
+    """Build Kafka topic name from model components.
 
     Format: {model_name}-{version}-{suffix}
-    Example: model-v1-cleaned, model-v1_pre-processed
+    Example: model-v1-cleaned
 
     Args:
         model_name: Model name
         version: Version string
-        suffix: Topic suffix (default: "cleaned", can be "pre-processed" or custom)
+        suffix: Topic suffix (default: "cleaned")
 
     Returns:
         str: Kafka topic name
     """
-    import re
-
-    # Sanitize for Kafka topic naming (Kafka topics: alphanumeric, -, _, .)
-    model_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", model_name.lower())
-    version_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", str(version).lower())
-    suffix_clean = re.sub(r"[^a-zA-Z0-9-_.]", "-", str(suffix).lower())
-
-    topic = f"{model_clean}-{version_clean}-{suffix_clean}"
-    return topic
+    return (
+        f"{_sanitize_kafka(model_name)}-{_sanitize_kafka(str(version))}-{_sanitize_kafka(suffix)}"
+    )
 
 
 def create_kafka_producer(bootstrap_servers: str, topic_name: str) -> Optional[object]:

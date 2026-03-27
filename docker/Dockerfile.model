@@ -1,0 +1,45 @@
+# MLflow model image with integrated Kafka bridge
+#
+# Two-step build (done by build_model_image.py):
+#   1. mlflow models build-docker  →  base image  (model + MLflow serving)
+#   2. docker build -f Dockerfile.model  →  final image  (base + kafka bridge)
+#
+# The Kafka bridge runs inside the same container as the model server.
+# When KAFKA_ENABLED=true the bridge calls localhost:MODEL_PORT/invocations
+# instead of a remote container, eliminating the sidecar entirely.
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+# librdkafka-dev is required by confluent-kafka
+# curl is used by the entrypoint health-check loop
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    librdkafka-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Kafka bridge Python deps
+RUN pip install --no-cache-dir \
+    confluent-kafka>=2.3.0 \
+    fastavro>=1.9.0 \
+    requests>=2.31.0
+
+# Copy bridge code and schemas
+COPY kafka_bridge/ /app/kafka_bridge/
+COPY schemas/      /app/schemas/
+
+# Entrypoint: starts MLflow server + (optionally) Kafka bridge
+COPY docker/entrypoint_model.sh /app/entrypoint_model.sh
+RUN chmod +x /app/entrypoint_model.sh
+
+# MLflow model serving port (standard)
+EXPOSE 8080
+
+# Healthcheck hits the MLflow /ping endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${MODEL_PORT:-8080}/ping || exit 1
+
+ENTRYPOINT ["/app/entrypoint_model.sh"]

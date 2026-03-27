@@ -139,8 +139,6 @@ class KafkaConsumerWrapper:
                 )
                 # Continue processing other messages
                 continue
-                # Continue processing other messages
-                continue
 
         if messages:
             self.logger.debug(

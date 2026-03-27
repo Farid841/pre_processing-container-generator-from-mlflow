@@ -4,7 +4,6 @@ Main Kafka Bridge orchestrator.
 Coordinates consumption, API calls, and production in a continuous loop.
 """
 
-import signal
 from typing import Any, List, Optional, Tuple
 
 from confluent_kafka import Message
@@ -15,6 +14,7 @@ from kafka_bridge.consumer import KafkaConsumerWrapper
 from kafka_bridge.logger import BridgeLogger
 from kafka_bridge.producer import KafkaProducerWrapper
 from kafka_bridge.serializers import MessageSerializer
+from kafka_bridge.signals import setup_signal_handlers
 
 
 class KafkaBridge:
@@ -68,16 +68,7 @@ class KafkaBridge:
 
     def _setup_signal_handlers(self) -> None:
         """Set up graceful shutdown on SIGTERM/SIGINT."""
-
-        def signal_handler(signum, frame):
-            self.logger.info(
-                "Received shutdown signal",
-                signal=signal.Signals(signum).name,
-            )
-            self.stop()
-
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
+        setup_signal_handlers(self.stop, logger=self.logger)
 
     def connect(self) -> None:
         """Connect to Kafka and verify API availability."""
@@ -229,8 +220,9 @@ class KafkaBridge:
             )
             return [], []
 
-        # Check if this is an MLflow model endpoint
-        if "/invocations" in self.config.api_endpoint:
+        # Check if this is an MLflow model endpoint.
+        # Use endswith to avoid false positives like "/batch/invocations-fallback".
+        if self.config.api_endpoint.rstrip("/").endswith("/invocations"):
             results = self.api_client.call_mlflow_invocations(valid_data_list)
         else:
             results = self.api_client.call_batch(valid_data_list)

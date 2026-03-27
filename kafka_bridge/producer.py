@@ -4,7 +4,8 @@ Kafka producer module for the bridge.
 Handles message production with proper delivery confirmation.
 """
 
-from typing import Callable, List, Optional
+from collections import deque
+from typing import Callable, Deque, List, Optional
 
 from confluent_kafka import Producer
 
@@ -33,7 +34,9 @@ class KafkaProducerWrapper:
         self.serializer = serializer
         self.logger = logger
         self.producer: Optional[Producer] = None
-        self._delivery_failures: List[str] = []
+        # Bounded queue: keeps the last 1000 delivery errors to prevent unbounded growth
+        # on long-running processes.
+        self._delivery_failures: Deque[str] = deque(maxlen=1000)
 
     def connect(self) -> None:
         """Connect to Kafka."""

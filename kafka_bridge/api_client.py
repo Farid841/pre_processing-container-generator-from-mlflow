@@ -192,165 +192,167 @@ class APIClient:
             )
             return None
 
-    def call_mlflow_invocations(self, data: List[dict]) -> Optional[List[dict]]:
-        """Call MLflow model serving /invocations endpoint.
+    def _normalize_record(self, record, index: int) -> Optional[list]:
+        """Normalize a single record into a feature vector list.
 
-        MLflow expects a specific format for invocations.
-        The preprocessing returns feature vectors directly.
+        Handles scalars, lists, and dicts from various preprocessing outputs.
 
         Args:
-            data: List of feature vectors (lists) ready for MLflow
+            record: A single input record in any supported format.
+            index:  Position in the batch (for log context).
 
         Returns:
-            List of predictions, or None if failed
+            A list of features, or None if the record should be skipped.
+        """
+        if record is None:
+            self.logger.warning("Skipping None record", index=index)
+            return None
+        if isinstance(record, (int, float)):
+            return [record]
+        if isinstance(record, list):
+            filtered = [x for x in record if x is not None]
+            if not filtered:
+                self.logger.warning("Empty list after filtering None, skipping", index=index)
+                return None
+            return filtered
+        if isinstance(record, dict):
+            return self._normalize_dict_record(record, index)
+        self.logger.warning("Invalid record format, skipping", record_type=type(record).__name__)
+        return None
+
+    def _normalize_dict_record(self, record: dict, index: int) -> Optional[list]:
+        """Extract a feature vector from a dict record.
+
+        Supports three dict shapes:
+        - ``{"model_input": [...]}`` — legacy format
+        - ``{"result": [...]}`` — preprocessing output format
+        - arbitrary dict  — values sorted by key are used as features
+
+        Args:
+            record: Dict record to normalize.
+            index:  Position in the batch (for log context).
+
+        Returns:
+            A list of features, or None if extraction fails.
+        """
+        if "model_input" in record:
+            return record["model_input"]
+        if "result" in record:
+            result = record["result"]
+            if isinstance(result, list):
+                return result
+            self.logger.warning(
+                "Invalid result format in record, skipping",
+                result_type=type(result).__name__,
+            )
+            return None
+        # Fall back: use scalar dict values sorted by key as feature vector
+        try:
+            feature_list = [
+                v
+                for k, v in sorted(record.items())
+                if not isinstance(v, (dict, list)) or k == "features"
+            ]
+            if feature_list:
+                return feature_list
+            self.logger.warning(
+                "Could not extract features from dict, skipping",
+                keys=list(record.keys())[:5],
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Error extracting features from dict, skipping",
+                error=str(e),
+            )
+        return None
+
+    def _clean_feature_vector(self, inp: list, index: int) -> Optional[list]:
+        """Replace None/NaN/Inf values in a feature vector with 0.0.
+
+        Args:
+            inp:   Raw feature vector (may contain None, NaN, or Inf).
+            index: Position in the batch (for log context).
+
+        Returns:
+            Cleaned list, or None if the result would be empty.
+        """
+        if not isinstance(inp, list):
+            inp = [inp]
+        cleaned = []
+        for val in inp:
+            if val is None:
+                cleaned.append(0.0)
+            elif isinstance(val, (int, float)) and (math.isnan(val) or math.isinf(val)):
+                self.logger.debug("Replacing invalid value (NaN or Inf) with 0.0", index=index)
+                cleaned.append(0.0)
+            else:
+                cleaned.append(val)
+        if not cleaned:
+            self.logger.warning("Empty input after cleaning, skipping", index=index)
+            return None
+        return cleaned
+
+    def call_mlflow_invocations(self, data: List) -> Optional[List]:
+        """Call MLflow model serving ``/invocations`` endpoint.
+
+        Normalizes each record to a feature vector, cleans invalid numeric
+        values, then POSTs ``{"inputs": [[…], …]}`` to MLflow.
+
+        Args:
+            data: List of records in any format supported by :meth:`_normalize_record`.
+
+        Returns:
+            List of predictions, or None if the call failed.
         """
         url = f"{self.base_url}/invocations"
 
+        self.logger.debug(
+            "Processing records for MLflow invocations",
+            total_records=len(data),
+            first_record_type=type(data[0]).__name__ if data else "empty",
+        )
+
+        # Step 1: normalize each record to a raw feature vector
+        raw_inputs = []
+        for i, record in enumerate(data):
+            vec = self._normalize_record(record, i)
+            if vec is not None:
+                raw_inputs.append(vec)
+
+        if not raw_inputs:
+            self.logger.error("No valid inputs to send to model")
+            return None
+
+        # Step 2: clean each vector (replace None/NaN/Inf with 0.0)
+        validated_inputs = []
+        for i, inp in enumerate(raw_inputs):
+            try:
+                cleaned = self._clean_feature_vector(inp, i)
+                if cleaned is not None:
+                    validated_inputs.append(cleaned)
+            except Exception as e:
+                self.logger.warning("Error validating input, skipping", index=i, error=str(e))
+
+        if not validated_inputs:
+            self.logger.error("No valid inputs after validation")
+            return None
+
+        payload = {"inputs": validated_inputs}
+        self.logger.debug(
+            "Sending to MLflow invocations",
+            url=url,
+            batch_size=len(validated_inputs),
+            sample_input_length=len(validated_inputs[0]) if validated_inputs else 0,
+            sample_input_preview=(
+                str(validated_inputs[0][:5])
+                if validated_inputs and validated_inputs[0]
+                else "empty"
+            ),
+        )
+
+        # Step 3: POST to MLflow and parse the response
         try:
             start_time = time.time()
-
-            # Data should already be feature vectors from preprocessing
-            # Just filter out any invalid entries
-            inputs = []
-
-            self.logger.debug(
-                "Processing records for MLflow invocations",
-                total_records=len(data),
-                first_record_type=type(data[0]).__name__ if data else "empty",
-            )
-
-            for i, record in enumerate(data):
-                # Skip None records
-                if record is None:
-                    self.logger.warning(
-                        "Skipping None record",
-                        index=i,
-                        total_records=len(data),
-                    )
-                    continue
-
-                if isinstance(record, (int, float)):
-                    # Single scalar - wrap in list to make it a feature vector
-                    inputs.append([record])
-                elif isinstance(record, list):
-                    # Feature vector from preprocessing (list of numbers)
-                    # Filter out None values
-                    filtered = [x for x in record if x is not None]
-                    if filtered:
-                        inputs.append(filtered)
-                    else:
-                        self.logger.warning(
-                            "Empty list after filtering None, skipping",
-                            index=i,
-                        )
-                elif isinstance(record, dict):
-                    if "model_input" in record:
-                        # Legacy format with model_input field
-                        inputs.append(record["model_input"])
-                    elif "result" in record:
-                        # Format from preprocessing: {"result": [features]}
-                        result = record["result"]
-                        if isinstance(result, list):
-                            inputs.append(result)
-                        else:
-                            self.logger.warning(
-                                "Invalid result format in record, skipping",
-                                result_type=type(result).__name__,
-                            )
-                    else:
-                        # Try to extract features from dict values
-                        # Assume dict values are the features in order
-                        try:
-                            # Convert dict to sorted list of values
-                            # This assumes dict keys are feature names
-                            feature_list = [
-                                v
-                                for k, v in sorted(record.items())
-                                if not isinstance(v, (dict, list)) or k == "features"
-                            ]
-                            if feature_list:
-                                inputs.append(feature_list)
-                            else:
-                                self.logger.warning(
-                                    "Could not extract features from dict, skipping",
-                                    keys=list(record.keys())[:5],  # Show first 5 keys
-                                )
-                        except Exception as e:
-                            self.logger.warning(
-                                "Error extracting features from dict, skipping",
-                                error=str(e),
-                                record_type=type(record).__name__,
-                            )
-                else:
-                    self.logger.warning(
-                        "Invalid record format, skipping",
-                        record_type=type(record).__name__,
-                    )
-                    continue
-
-            if not inputs:
-                self.logger.error("No valid inputs to send to model")
-                return None
-
-            # MLflow expects {"inputs": [[f1, f2, ...], [f1, f2, ...]]}
-            # Validate inputs: check for NaN, inf, or invalid values
-            validated_inputs = []
-            for i, inp in enumerate(inputs):
-                try:
-                    # Convert to list if not already
-                    if not isinstance(inp, list):
-                        inp = [inp]
-
-                    # Check for invalid values - replace None/NaN/Inf with 0.0
-                    cleaned = []
-                    for val in inp:
-                        if val is None:
-                            cleaned.append(0.0)  # Replace None with 0.0
-                        elif isinstance(val, (int, float)):
-                            if math.isnan(val) or math.isinf(val):
-                                self.logger.debug(
-                                    "Replacing invalid value (NaN or Inf) with 0.0",
-                                    index=i,
-                                )
-                                cleaned.append(0.0)  # Replace NaN/Inf with 0.0
-                            else:
-                                cleaned.append(val)
-                        else:
-                            cleaned.append(val)
-
-                    if cleaned:
-                        validated_inputs.append(cleaned)
-                    else:
-                        self.logger.warning(
-                            "Empty input after cleaning, skipping",
-                            index=i,
-                        )
-                except Exception as e:
-                    self.logger.warning(
-                        "Error validating input, skipping",
-                        index=i,
-                        error=str(e),
-                    )
-                    continue
-
-            if not validated_inputs:
-                self.logger.error("No valid inputs after validation")
-                return None
-
-            payload = {"inputs": validated_inputs}
-
-            self.logger.debug(
-                "Sending to MLflow invocations",
-                url=url,
-                batch_size=len(validated_inputs),
-                sample_input_length=len(validated_inputs[0]) if validated_inputs else 0,
-                sample_input_preview=(
-                    str(validated_inputs[0][:5])
-                    if validated_inputs and validated_inputs[0]
-                    else "empty"
-                ),
-            )
-
             response = self.session.post(
                 url,
                 json=payload,
@@ -358,22 +360,19 @@ class APIClient:
                 timeout=self.config.api_timeout,
             )
 
-            # Capture detailed error message if request fails
             if not response.ok:
                 try:
-                    error_detail = response.text
                     self.logger.error(
                         "MLflow invocations call failed",
                         status_code=response.status_code,
-                        error_detail=error_detail[:500],  # First 500 chars
-                        payload_preview=str(payload)[:200],  # First 200 chars of payload
+                        error_detail=response.text[:500],
+                        payload_preview=str(payload)[:200],
                     )
                 except Exception:
                     pass
                 response.raise_for_status()
 
             elapsed = time.time() - start_time
-
             self.logger.record_api_call(success=True)
             self.logger.debug(
                 "MLflow invocations call succeeded",
@@ -383,14 +382,11 @@ class APIClient:
             )
 
             result = response.json()
-
-            # MLflow returns {"predictions": [...]} or just [...]
             if isinstance(result, dict) and "predictions" in result:
                 return result["predictions"]
             elif isinstance(result, list):
                 return result
-            else:
-                return [result]
+            return [result]
 
         except requests.exceptions.RequestException as e:
             self.logger.record_api_call(success=False)

@@ -298,34 +298,27 @@ if [ -n "$MODEL_SOURCE" ]; then
 
     # If MODEL_SOURCE doesn't look like a valid MLflow URI, try to construct it
     if [[ ! "$MODEL_SOURCE" =~ ^(runs:|models:) ]]; then
-        # If it's just an ID or path, try to auto-detect from run
         if [[ "$MODEL_SOURCE" =~ ^models/ ]] || [[ "$MODEL_SOURCE" =~ ^m- ]]; then
-            # User provided something like "models/m-xxx" or "m-xxx"
             echo -e "${YELLOW}⚠️  Auto-detecting model URI from run...${NC}"
             MODEL_URI=$(get_model_uri_from_run)
             echo -e "${BLUE}   Using: ${MODEL_URI}${NC}"
         else
-            # Assume it's a path in the run artifacts
             MODEL_URI="runs:/${RUN_ID}/${MODEL_SOURCE}"
             echo -e "${BLUE}   Constructed model URI: ${MODEL_URI}${NC}"
         fi
     fi
 
-    # Build model image with MLflow
-    echo -e "${BLUE}   Building with: mlflow models build-docker -m ${MODEL_URI}${NC}"
-    mlflow models build-docker \
-        -m "$MODEL_URI" \
-        -n "$MODEL_IMAGE_NAME" \
-        --install-mlflow
+    # Build model image (base via mlflow + wrapper with kafka bridge)
+    echo -e "${BLUE}   Building with: build_model_image.py (2-step: mlflow base + kafka bridge)${NC}"
+    python3 build_scripts/build_model_image.py \
+        "$MODEL_URI" \
+        "$MODEL_NAME" \
+        "$MODEL_VERSION" \
+        --tag "$TAG"
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Model build failed${NC}"
         exit 1
-    fi
-
-    # Tag if not latest
-    if [ "$TAG" != "latest" ]; then
-        docker tag "${MODEL_IMAGE_NAME}:latest" "${MODEL_IMAGE_NAME}:${TAG}"
     fi
 
     echo -e "${GREEN}✅ Model image built: ${MODEL_IMAGE_NAME}:${TAG}${NC}"

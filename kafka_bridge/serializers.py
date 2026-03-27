@@ -205,15 +205,15 @@ class MessageSerializer:
 
         cutout_fields = ["cutoutScience", "cutoutTemplate", "cutoutDifference"]
 
-        # Si c'est une liste, traiter chaque élément récursivement
+        # If data is a list, process each element recursively
         if isinstance(data, list):
             return [self._strip_cutouts(item) for item in data]
 
-        # Si c'est un dict, filtrer les cutouts
+        # If data is a dict, filter out cutout fields
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if k not in cutout_fields}
 
-        # Sinon, retourner tel quel (int, str, etc.)
+        # Otherwise return as-is (int, str, etc.)
         return data
 
     def deserialize(self, data: bytes) -> Any:

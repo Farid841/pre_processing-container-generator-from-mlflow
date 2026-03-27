@@ -1,63 +1,132 @@
-name: Build MLflow Images
+name: Build, Push and Test MLflow Images
 
 on:
+  # Manual trigger — useful for testing without a MLflow webhook
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'MLflow run ID (required)'
+        required: true
+      model_source:
+        description: 'MLflow model URI, e.g. models:/name/1 (leave empty for preprocessing only)'
+        required: false
+        default: ''
+
+  # Automatic trigger — sent by MLflow when a new model version is registered
   repository_dispatch:
     types: [mlflow-model-version]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Variables non-sensibles disponibles dans TOUS les jobs
+# Les valeurs sensibles sont dans les secrets GitHub (Settings → Secrets)
+# ─────────────────────────────────────────────────────────────────────────────
 env:
-  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-  MLFLOW_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
-  MLFLOW_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+  REGISTRY: ghcr.io
 
+# ─────────────────────────────────────────────────────────────────────────────
 jobs:
-  build-images:
-    name: Build Preprocessing and Model Images
+
+  # ── 1. Unit tests ──────────────────────────────────────────────────────────
+  # Pas besoin de MLflow ni d'AWS ici : tout est mocké
+  unit-tests:
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install mlflow docker
+          pip install \
+            mlflow \
+            confluent-kafka \
+            fastavro \
+            fastapi \
+            uvicorn \
+            requests \
+            pytest \
+            pytest-cov
 
-      - name: Extract webhook data
-        id: extract-data
-        run: |
-          RUN_ID="${{ github.event.client_payload.data.run_id }}"
-          MODEL_NAME="${{ github.event.client_payload.data.name }}"
-          MODEL_VERSION="${{ github.event.client_payload.data.version }}"
+      - name: Run unit tests
+        run: pytest tests/ -v -m "not integration" --tb=short
 
-          echo "run_id=${RUN_ID}" >> $GITHUB_OUTPUT
-          echo "model_name=${MODEL_NAME}" >> $GITHUB_OUTPUT
-          echo "model_version=${MODEL_VERSION}" >> $GITHUB_OUTPUT
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
 
-          echo "Extracted data:"
-          echo "  RUN_ID: ${RUN_ID}"
-          echo "  MODEL_NAME: ${MODEL_NAME}"
-          echo "  MODEL_VERSION: ${MODEL_VERSION}"
+  # ── 2. Build images et push vers ghcr.io ───────────────────────────────────
+  # Ce job a besoin de TOUTES les credentials : MLflow + S3/MinIO + ghcr.io
+  build-and-push:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    permissions:
+      contents: read
+      packages: write   # requis pour pousser vers ghcr.io
+
+    outputs:
+      preprocessing_image: ${{ steps.image-names.outputs.preprocessing_image }}
+
+    # ── Credentials MLflow + S3/MinIO scopés à ce job uniquement ─────────────
+    env:
+      # MLflow tracking server
+      MLFLOW_TRACKING_URI:      ${{ secrets.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+
+      # S3 / MinIO — utilisé par MLflow pour télécharger les artefacts
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION:    ${{ secrets.AWS_DEFAULT_REGION }}
+      AWS_ENDPOINT_URL:      ${{ secrets.AWS_ENDPOINT_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install mlflow boto3
 
       - name: Verify MLflow connection
         run: |
-          python -c "
-          import mlflow
-          import os
-          mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI'])
+          python3 -c "
+          import mlflow, os
+          uri = os.environ.get('MLFLOW_TRACKING_URI', '')
+          if not uri:
+              print('WARNING: MLFLOW_TRACKING_URI not set')
+              exit(0)
+          mlflow.set_tracking_uri(uri)
           try:
-              # Try to list experiments to verify connection
-              experiments = mlflow.search_experiments(max_results=1)
-              print('✅ MLflow connection successful')
+              mlflow.search_experiments(max_results=1)
+              print('MLflow connection OK')
           except Exception as e:
-              print(f'❌ MLflow connection failed: {e}')
+              print(f'MLflow connection FAILED: {e}')
               exit(1)
           "
+
+      - name: Extract build parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_id=${{ github.event.inputs.run_id }}"              >> $GITHUB_OUTPUT
+            echo "model_source=${{ github.event.inputs.model_source }}"  >> $GITHUB_OUTPUT
+          else
+            echo "run_id=${{ github.event.client_payload.data.run_id }}"       >> $GITHUB_OUTPUT
+            echo "model_source=${{ github.event.client_payload.data.source }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -66,35 +135,128 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build preprocessing and model Docker images
+      - name: Build and push images
         run: |
-          RUN_ID="${{ steps.extract-data.outputs.run_id }}"
-          MODEL_SOURCE="${{ github.event.client_payload.data.source }}"
+          BUILD_ARGS="${{ steps.params.outputs.run_id }}"
+          MODEL_SOURCE="${{ steps.params.outputs.model_source }}"
+          if [ -n "$MODEL_SOURCE" ]; then
+            BUILD_ARGS="$BUILD_ARGS --model-source $MODEL_SOURCE"
+          fi
+          ./build.sh $BUILD_ARGS --tag latest
 
-          # Use build.sh which handles both preprocessing and model builds
-          ./build.sh "${RUN_ID}" \
-            --model-source "${MODEL_SOURCE}" \
-            --tag latest
-
-      - name: Get built image names
-        id: get-image-names
+      - name: Compute image names
+        id: image-names
         run: |
-          MODEL_NAME="${{ steps.extract-data.outputs.model_name }}"
-          MODEL_VERSION="${{ steps.extract-data.outputs.model_version }}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          RUN_ID="${{ steps.params.outputs.run_id }}"
 
-          # Sanitize for image names
-          PREPROCESSING_IMAGE=$(echo "preprocessing-${MODEL_NAME}-${MODEL_VERSION}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          MODEL_IMAGE=$(echo "model-${MODEL_NAME}-${MODEL_VERSION}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          IMAGE_SUFFIX=$(python3 - <<'EOF'
+          import mlflow, os, re
 
-          GITHUB_REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          run_id = os.environ["RUN_ID"]
+          mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", ""))
 
-          echo "preprocessing_image=${PREPROCESSING_IMAGE}" >> $GITHUB_OUTPUT
-          echo "model_image=${MODEL_IMAGE}" >> $GITHUB_OUTPUT
-          echo "preprocessing_registry=ghcr.io/${GITHUB_REPO_LOWER}/${PREPROCESSING_IMAGE}" >> $GITHUB_OUTPUT
-          echo "model_registry=ghcr.io/${GITHUB_REPO_LOWER}/${MODEL_IMAGE}" >> $GITHUB_OUTPUT
+          try:
+              run  = mlflow.get_run(run_id)
+              name = (run.data.tags.get("model_name")
+                      or run.data.tags.get("mlflow.runName")
+                      or "unknown")
+              ver  = (run.data.tags.get("version")
+                      or run.data.tags.get("model_version")
+                      or run_id[:8])
+          except Exception:
+              name, ver = "unknown", run_id[:8]
 
-      - name: Output image info
+          clean = lambda s: re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")
+          print(f"preprocessing-{clean(name)}-{clean(ver)}")
+          EOF
+          )
+
+          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${IMAGE_SUFFIX}:latest" >> $GITHUB_OUTPUT
+        env:
+          RUN_ID: ${{ steps.params.outputs.run_id }}
+
+  # ── 3. Smoke tests ─────────────────────────────────────────────────────────
+  # Pas besoin de MLflow ni d'AWS : on pull l'image déjà buildée et on teste l'API
+  smoke-tests:
+    name: Smoke Tests (Preprocessing Container)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull preprocessing image
+        run: docker pull "${{ needs.build-and-push.outputs.preprocessing_image }}"
+
+      - name: Start preprocessing container
         run: |
-          echo "✅ All images built and pushed successfully"
-          echo "Preprocessing: ${{ steps.get-image-names.outputs.preprocessing_registry }}:latest"
-          echo "Model: ${{ steps.get-image-names.outputs.model_registry }}:latest"
+          docker run -d \
+            --name preprocessing-smoke \
+            -p 8000:8000 \
+            "${{ needs.build-and-push.outputs.preprocessing_image }}"
+
+      - name: Wait for container to be healthy
+        run: |
+          echo "Waiting for container to be healthy..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Container is healthy (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/30..."
+            sleep 2
+          done
+          echo "Container did not become healthy within 60s"
+          docker logs preprocessing-smoke
+          exit 1
+
+      - name: Smoke test — /health
+        run: |
+          RESP=$(curl -sf http://localhost:8000/health)
+          echo "Response: $RESP"
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d.get('status') == 'ok', f'Expected status=ok, got: {d}'
+          print('PASS /health')
+          "
+
+      - name: Smoke test — /preprocess (single record)
+        run: |
+          RESP=$(curl -sf -X POST http://localhost:8000/preprocess \
+            -H "Content-Type: application/json" \
+            -d '{"data": {"objectId": "ZTF21smoketest", "value": 1.0}}')
+          echo "Response: $RESP"
+          echo "$RESP" | python3 -c "
+          import sys, json
+          json.load(sys.stdin)   # valid JSON = pass
+          print('PASS /preprocess')
+          "
+
+      - name: Smoke test — /preprocess/batch
+        run: |
+          RESP=$(curl -sf -X POST http://localhost:8000/preprocess/batch \
+            -H "Content-Type: application/json" \
+            -d '{"data": [{"objectId": "ZTF21a"}, {"objectId": "ZTF21b"}]}')
+          echo "Response: $RESP"
+          echo "$RESP" | python3 -c "
+          import sys, json
+          json.load(sys.stdin)   # valid JSON = pass
+          print('PASS /preprocess/batch')
+          "
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs preprocessing-smoke
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop preprocessing-smoke 2>/dev/null || true
+          docker rm   preprocessing-smoke 2>/dev/null || true

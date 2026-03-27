@@ -8,7 +8,6 @@ and produces results to another Kafka topic.
 
 import logging
 import os
-import signal
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -24,6 +23,7 @@ from kafka_bridge.consumer import KafkaConsumerWrapper
 from kafka_bridge.logger import BridgeLogger
 from kafka_bridge.producer import KafkaProducerWrapper
 from kafka_bridge.serializers import MessageSerializer
+from kafka_bridge.signals import setup_signal_handlers
 from runner.runner import load_preprocessing
 
 logging.basicConfig(
@@ -92,16 +92,7 @@ class KafkaProcessor:
 
     def _setup_signal_handlers(self) -> None:
         """Set up graceful shutdown on SIGTERM/SIGINT."""
-
-        def signal_handler(signum, frame):
-            self.logger.info(
-                "Received shutdown signal",
-                signal=signal.Signals(signum).name,
-            )
-            self.stop()
-
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
+        setup_signal_handlers(self.stop, logger=self.logger)
 
     def _extract_key(self, data: dict) -> Optional[str]:
         """Extract a message key from the data.

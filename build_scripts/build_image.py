@@ -54,7 +54,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from build_scripts.utils import sanitize_docker_name, stream_run
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -284,15 +287,11 @@ def build_image_name(model_name: str, version: str, type_name: str = "preprocess
     Returns:
         str: Image name (without tag)
     """
-    import re
-
-    # Sanitize names (remove special chars, replace spaces with hyphens)
-    model_name_clean = re.sub(r"[^a-zA-Z0-9-]", "-", model_name.lower())
-    version_clean = re.sub(r"[^a-zA-Z0-9-]", "-", str(version).lower())
-    type_clean = type_name.lower()
-
-    image_name = f"{type_clean}-{model_name_clean}-{version_clean}"
-    return image_name
+    return (
+        f"{sanitize_docker_name(type_name)}"
+        f"-{sanitize_docker_name(model_name)}"
+        f"-{sanitize_docker_name(str(version))}"
+    )
 
 
 def build_docker_image(
@@ -358,10 +357,9 @@ def build_docker_image(
     # This allows Docker to use cache for the runner which doesn't change
     base_path = Path(build_context).resolve()
 
-    # Create a temporary directory ONLY for preprocessing
-    # The runner stays in the source directory (doesn't change between builds)
-    preprocessing_temp_dir = Path("/tmp/preprocessing-build")
-    preprocessing_temp_dir.mkdir(parents=True, exist_ok=True)
+    # Create a private temporary directory for preprocessing artifacts.
+    # Using tempfile ensures the directory is only readable by the current user.
+    preprocessing_temp_dir = Path(tempfile.mkdtemp(prefix="preprocessing-build-"))
 
     # If preprocessing is in a directory (e.g., code/preprocessing.py), copy the entire directory
     if preprocessing_dir:
@@ -489,8 +487,7 @@ def build_docker_image(
     logger.info("Note: Docker cache will be used for runner layers (they don't change)")
 
     try:
-        # Use Popen for real-time output streaming
-        process = subprocess.Popen(
+        stream_run(
             [
                 "docker",
                 "build",
@@ -499,37 +496,18 @@ def build_docker_image(
                 "-f",
                 str(temp_dockerfile),
                 str(base_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            ]
         )
-
-        # Stream output in real-time
-        output_lines = []
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            output_lines.append(line)
-
-        process.wait()
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(
-                process.returncode, "docker build", output="".join(output_lines)
-            )
-
         logger.info(f"✅ Image built successfully: {image_full_name}")
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Docker build failed (exit code: {e.returncode})")
 
-        # Analyze error output for Python compatibility issues
-        error_output = e.output if hasattr(e, "output") and e.output else ""
+        # Analyze captured output for Python compatibility hints
+        error_output = e.output or ""
         import re
 
-        # Check for Python version requirement
-        matches = re.findall(r"Requires-Python >=(\d+\.\d+)", error_output)
-        if matches:
+        if re.search(r"Requires-Python >=\d+\.\d+", error_output):
             logger.error("")
             logger.error("=" * 60)
             logger.error("⚠️  PYTHON VERSION ISSUE - Try: --python-version 3.11")
@@ -545,6 +523,8 @@ def build_docker_image(
             py_file.unlink()
         if (preprocessing_source_dir / "requirements.txt").exists():
             (preprocessing_source_dir / "requirements.txt").unlink()
+        # Clean up the private temp directory created by tempfile.mkdtemp()
+        shutil.rmtree(preprocessing_temp_dir, ignore_errors=True)
         logger.info("Cleaned temporary files")
     except Exception as e:
         logger.warning(f"Could not clean temp files: {e}")
