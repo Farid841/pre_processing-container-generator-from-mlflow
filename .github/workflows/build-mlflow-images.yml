@@ -1,7 +1,7 @@
 name: Build, Push and Test MLflow Images
 
 on:
-  # Manual trigger — useful for testing without a MLflow webhook
+  # Manual trigger  useful for testing without a MLflow webhook
   workflow_dispatch:
     inputs:
       run_id:
@@ -12,49 +12,18 @@ on:
         required: false
         default: ''
 
-  # Automatic trigger — fired by promote.py after @champion alias is set
+  # Automatic trigger fired by promote.py after @champion alias is set
   repository_dispatch:
     types: [mlflow-model-version]
 
 env:
   REGISTRY: ghcr.io
 
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
 
-  # ── 1. Unit tests ─────────────────────────────────────────────────────────
   unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    uses: ./.github/workflows/_unit-tests.yml
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install PDM
-        run: pip install pdm
-
-      - name: Install test dependencies
-        run: pdm install -dG test
-
-      - name: Run unit tests
-        run: pdm run test
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: |
-            coverage.xml
-            htmlcov/
-
-  # ── 2. Build images and push to ghcr.io ───────────────────────────────────
   build-and-push:
     name: Build and Push Images
     runs-on: ubuntu-latest
@@ -111,7 +80,7 @@ jobs:
 
       - name: Extract build parameters
         id: params
-        # Pass values through env vars to avoid shell injection
+        # Pass values through env vars
         env:
           WD_RUN_ID:       ${{ github.event.inputs.run_id }}
           WD_MODEL_SOURCE: ${{ github.event.inputs.model_source }}
@@ -185,7 +154,6 @@ jobs:
           echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${IMAGE_NAME}:latest"        >> $GITHUB_OUTPUT
           echo "image_tag=${VERSION_TAG}"                                                >> $GITHUB_OUTPUT
 
-  # ── 3. Smoke tests ────────────────────────────────────────────────────────
   smoke-tests:
     name: Smoke Tests (Preprocessing Container)
     runs-on: ubuntu-latest
