@@ -272,32 +272,32 @@ def get_model_info_from_mlflow(run_id: str):
         return "unknown-model", run_id[:8], "preprocessing"
 
 
-def build_image_name(model_name: str, version: str, type_name: str = "preprocessing") -> str:
+def build_image_name(model_name: str, type_name: str = "preprocessing") -> str:
     """
     Build Docker image name from model components.
 
-    Format: {type}-{model_name}-{version}
-    Example: preprocessing-model-v1, model-classifier-v2.0.0
+    Format: {type}-{model_name}
+    Example: preprocessing-ztf-real-bogus, model-ztf-real-bogus
+
+    The version belongs in the tag, not in the name.  This lets
+    ``docker pull preprocessing-ztf-real-bogus:v3`` always resolve to the
+    correct build and ``preprocessing-ztf-real-bogus:latest`` always point
+    to the current champion.
 
     Args:
         model_name: Model name
-        version: Version string
         type_name: Component type (preprocessing or model)
 
     Returns:
         str: Image name (without tag)
     """
-    return (
-        f"{sanitize_docker_name(type_name)}"
-        f"-{sanitize_docker_name(model_name)}"
-        f"-{sanitize_docker_name(str(version))}"
-    )
+    return f"{sanitize_docker_name(type_name)}" f"-{sanitize_docker_name(model_name)}"
 
 
 def build_docker_image(
     run_id: str,
     image_name: str,
-    image_tag: str = "latest",
+    image_tags: list[str] = None,
     preprocessing_path: str = None,
     dockerfile_path: str = "docker/Dockerfile",
     build_context: str = ".",
@@ -305,14 +305,23 @@ def build_docker_image(
     model_name: str = None,
     model_version: str = None,
     component_type: str = "preprocessing",
-):
+) -> list[str]:
     """
     Build Docker image with preprocessing from MLflow.
 
+    The image is built once (with the first tag) and the remaining tags are
+    applied via ``docker tag``.  Typical call from CI::
+
+        build_docker_image(
+            run_id="abc123",
+            image_name="preprocessing-ztf-real-bogus",
+            image_tags=["latest", "v3", "v3-abc12345"],
+        )
+
     Args:
         run_id: MLflow run ID
-        image_name: Image name (e.g., "preprocessing-model-v1")
-        image_tag: Image tag
+        image_name: Image name without tag (e.g., "preprocessing-ztf-real-bogus")
+        image_tags: List of tags to apply.  Defaults to ["latest"].
         preprocessing_path: Artifact path in MLflow
         dockerfile_path: Path to base Dockerfile
         build_context: Docker build context
@@ -322,32 +331,10 @@ def build_docker_image(
         component_type: Component type (preprocessing or model)
 
     Returns:
-        str: Full Docker image name (e.g., "preprocessing-model-v1:latest")
-
-    Examples:
-        >>> # Basic build
-        >>> build_docker_image(
-        ...     run_id="e6c1131f4673449aa688ed1ffc3abbbe",
-        ...     image_name="preprocessing-model-v1"
-        ... )
-        'preprocessing-model-v1:latest'
-
-        >>> # Build with specific tag
-        >>> build_docker_image(
-        ...     run_id="e6c1131f4673449aa688ed1ffc3abbbe",
-        ...     image_name="preprocessing-model-v1",
-        ...     image_tag="v1.0.0"
-        ... )
-        'preprocessing-model-v1:v1.0.0'
-
-        >>> # Build with preprocessing in a subdirectory
-        >>> build_docker_image(
-        ...     run_id="e6c1131f4673449aa688ed1ffc3abbbe",
-        ...     image_name="preprocessing-model-v1",
-        ...     preprocessing_path="models/preprocessing.py"
-        ... )
-        'preprocessing-model-v1:latest'
+        list[str]: All tagged image names that were produced.
     """
+    if image_tags is None:
+        image_tags = ["latest"]
     # 1. Download preprocessing (and its parent directory if in a directory)
     preprocessing_file, preprocessing_dir = download_preprocessing_from_mlflow(
         run_id, preprocessing_path
@@ -480,11 +467,11 @@ def build_docker_image(
             preprocessing_source_dir / "requirements.txt",
         )
 
-    # 6. Build Docker image with source directory as context
-    # Docker will use cache for runner layers that don't change
-    image_full_name = f"{image_name}:{image_tag}"
-    logger.info(f"Building Docker image: {image_full_name}")
-    logger.info("Note: Docker cache will be used for runner layers (they don't change)")
+    # 6. Build Docker image (with the first tag) then apply the rest via docker tag
+    primary_tag = image_tags[0]
+    primary_image = f"{image_name}:{primary_tag}"
+    logger.info(f"Building Docker image: {primary_image}")
+    logger.info(f"Will also tag as: {[f'{image_name}:{t}' for t in image_tags[1:]]}")
 
     try:
         stream_run(
@@ -492,13 +479,13 @@ def build_docker_image(
                 "docker",
                 "build",
                 "-t",
-                image_full_name,
+                primary_image,
                 "-f",
                 str(temp_dockerfile),
                 str(base_path),
             ]
         )
-        logger.info(f"✅ Image built successfully: {image_full_name}")
+        logger.info(f"✅ Image built: {primary_image}")
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Docker build failed (exit code: {e.returncode})")
@@ -514,6 +501,14 @@ def build_docker_image(
             logger.error("=" * 60)
 
         raise
+
+    # Apply remaining tags
+    all_images = [primary_image]
+    for tag in image_tags[1:]:
+        extra = f"{image_name}:{tag}"
+        subprocess.run(["docker", "tag", primary_image, extra], check=True)
+        logger.info(f"Tagged: {extra}")
+        all_images.append(extra)
 
     # Clean up temporary files
     try:
@@ -531,13 +526,11 @@ def build_docker_image(
 
     if requirements_installed:
         logger.info("✅ Build complete! Preprocessing + requirements installed.")
-        logger.info("   - Runner layers: cached (don't change)")
-        logger.info("   - Preprocessing: new")
-        logger.info("   - Requirements: installed from MLflow")
     else:
-        logger.info("✅ Build complete! Only preprocessing changed, runner layers were cached.")
+        logger.info("✅ Build complete!")
+    logger.info(f"   Tags: {all_images}")
 
-    return image_full_name
+    return all_images
 
 
 def main():
@@ -607,7 +600,18 @@ Prerequisites:
             "Use 'auto' to generate from MLflow metadata (default: auto)"
         ),
     )
-    parser.add_argument("--tag", "-t", default="latest", help="Docker image tag (default: latest)")
+    parser.add_argument(
+        "--tag",
+        "-t",
+        action="append",
+        dest="tags",
+        metavar="TAG",
+        help=(
+            "Docker image tag (can be repeated).  "
+            "If omitted, three tags are auto-generated: "
+            "latest, v{version}, v{version}-{run_id[:8]}"
+        ),
+    )
     parser.add_argument(
         "--preprocessing-path",
         default=None,
@@ -642,17 +646,24 @@ Prerequisites:
 
         # Build image name if auto or not provided
         if args.image_name == "auto" or not args.image_name:
-            image_name = build_image_name(model_name, version, type_name)
+            image_name = build_image_name(model_name, type_name)
             logger.info(f"Auto-generated image name: {image_name}")
         else:
             image_name = args.image_name
             logger.info(f"Using provided image name: {image_name}")
 
+        # Determine tags — auto-generate if none supplied
+        tags = args.tags
+        if not tags:
+            clean_ver = sanitize_docker_name(str(version))
+            tags = ["latest", f"v{clean_ver}", f"v{clean_ver}-{args.run_id[:8]}"]
+            logger.info(f"Auto-generated tags: {tags}")
+
         # Build Docker image
-        full_image_name = build_docker_image(
+        all_images = build_docker_image(
             run_id=args.run_id,
             image_name=image_name,
-            image_tag=args.tag,
+            image_tags=tags,
             preprocessing_path=args.preprocessing_path,
             dockerfile_path=args.dockerfile,
             python_version=args.python_version,
@@ -661,7 +672,7 @@ Prerequisites:
             component_type=type_name,
         )
 
-        logger.info(f"Successfully built: {full_image_name}")
+        logger.info(f"Successfully built: {all_images}")
     except Exception as e:
         logger.error(f"Build failed: {e}", exc_info=True)
         sys.exit(1)

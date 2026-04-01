@@ -92,8 +92,8 @@ class TestBuildWrapperImage:
 
         result = build_model_image.build_wrapper_image(
             base_image="model-foo-3-base:latest",
-            final_image_name="model-foo-3",
-            image_tag="latest",
+            final_image_name="model-foo",
+            image_tags=["latest"],
             dockerfile_path=str(dockerfile),
             build_context=".",
         )
@@ -103,7 +103,7 @@ class TestBuildWrapperImage:
                 "docker",
                 "build",
                 "-t",
-                "model-foo-3:latest",
+                "model-foo:latest",
                 "-f",
                 str(dockerfile),
                 "--build-arg",
@@ -111,7 +111,7 @@ class TestBuildWrapperImage:
                 ".",
             ]
         )
-        assert result == "model-foo-3:latest"
+        assert result == ["model-foo:latest"]
 
     @patch("build_scripts.build_model_image._stream_run")
     def test_respects_custom_tag(self, mock_stream, tmp_path):
@@ -121,13 +121,13 @@ class TestBuildWrapperImage:
 
         build_model_image.build_wrapper_image(
             base_image="base:latest",
-            final_image_name="model-foo-3",
-            image_tag="v3.0",
+            final_image_name="model-foo",
+            image_tags=["v3.0"],
             dockerfile_path=str(dockerfile),
         )
 
         args = mock_stream.call_args[0][0]
-        assert "model-foo-3:v3.0" in args
+        assert "model-foo:v3.0" in args
 
     def test_raises_when_dockerfile_missing(self):
         """Raise an error when Dockerfile.model does not exist."""
@@ -188,7 +188,7 @@ class TestMain:
     def test_full_build_two_steps(self, mock_base, mock_wrapper):
         """main() runs base build then wrapper build with correct args."""
         mock_base.return_value = "model-mymodel-3-base:latest"
-        mock_wrapper.return_value = "model-mymodel-3:latest"
+        mock_wrapper.return_value = ["model-mymodel:latest", "model-mymodel:v3"]
 
         with patch(
             "sys.argv",
@@ -207,8 +207,8 @@ class TestMain:
         )
         mock_wrapper.assert_called_once_with(
             base_image="model-mymodel-3-base:latest",
-            final_image_name="model-mymodel-3",
-            image_tag="latest",
+            final_image_name="model-mymodel",
+            image_tags=["latest", "v3"],
             dockerfile_path="docker/Dockerfile.model",
         )
 
@@ -216,7 +216,7 @@ class TestMain:
     @patch("build_scripts.build_model_image.build_mlflow_base_image")
     def test_skip_base_build(self, mock_base, mock_wrapper):
         """--skip-base-build skips mlflow build-docker entirely."""
-        mock_wrapper.return_value = "model-mymodel-3:latest"
+        mock_wrapper.return_value = ["model-mymodel:latest", "model-mymodel:v3"]
 
         with patch(
             "sys.argv",

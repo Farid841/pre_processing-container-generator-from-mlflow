@@ -1,4 +1,0 @@
-# Kafka Bridge dependencies
-confluent-kafka>=2.3.0
-fastavro>=1.9.0
-requests>=2.31.0

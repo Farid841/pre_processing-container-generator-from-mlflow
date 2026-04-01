@@ -130,12 +130,12 @@ class TestBuildDockerImage:
         result = build_image.build_docker_image(
             run_id="test-run-id",
             image_name="test-image",
-            image_tag="latest",
+            image_tags=["latest"],
             build_context=str(temp_dir),
             dockerfile_path=str(dockerfile),
         )
 
-        assert result == "test-image:latest"
+        assert result == ["test-image:latest"]
         mock_subprocess.run.assert_called_once()
 
     @patch("build_scripts.build_image.download_preprocessing_from_mlflow")
@@ -168,7 +168,7 @@ class TestBuildDockerImage:
             dockerfile_path=str(dockerfile),
         )
 
-        assert result == "test-image:latest"
+        assert result == ["test-image:latest"]
 
     @pytest.mark.skip(reason="Complex test requiring Docker and multiple mocks - not critical")
     @patch("build_scripts.build_image.download_preprocessing_from_mlflow")

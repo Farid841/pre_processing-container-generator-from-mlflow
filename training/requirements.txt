@@ -1,0 +1,5 @@
+# Dependencies for preprocessing.py inside the Fink/Docker container.
+# preprocessing.py uses only the Python standard library — no extra packages needed.
+#
+# If you extend pre_processing() to use numpy, pandas, etc., add them here.
+# They will be installed inside the container by the build script.

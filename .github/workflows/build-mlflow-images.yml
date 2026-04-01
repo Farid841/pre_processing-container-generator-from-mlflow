@@ -8,29 +8,25 @@ on:
         description: 'MLflow run ID (required)'
         required: true
       model_source:
-        description: 'MLflow model URI, e.g. models:/name/1 (leave empty for preprocessing only)'
+        description: 'MLflow model URI, e.g. models:/name@champion (leave empty for preprocessing only)'
         required: false
         default: ''
 
-  # Automatic trigger — sent by MLflow when a new model version is registered
+  # Automatic trigger — fired by promote.py after @champion alias is set
   repository_dispatch:
     types: [mlflow-model-version]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Variables non-sensibles disponibles dans TOUS les jobs
-# Les valeurs sensibles sont dans les secrets GitHub (Settings → Secrets)
-# ─────────────────────────────────────────────────────────────────────────────
 env:
   REGISTRY: ghcr.io
 
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
 
-  # ── 1. Unit tests ──────────────────────────────────────────────────────────
-  # Pas besoin de MLflow ni d'AWS ici : tout est mocké
+  # ── 1. Unit tests ─────────────────────────────────────────────────────────
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -38,21 +34,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install dependencies
-        run: |
-          pip install \
-            mlflow \
-            confluent-kafka \
-            fastavro \
-            fastapi \
-            uvicorn \
-            requests \
-            pytest \
-            pytest-cov
+      - name: Install PDM
+        run: pip install pdm
+
+      - name: Install test dependencies
+        run: pdm install -dG test
 
       - name: Run unit tests
-        run: pytest tests/ -v -m "not integration" --tb=short
+        run: pdm run test
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -63,32 +54,29 @@ jobs:
             coverage.xml
             htmlcov/
 
-  # ── 2. Build images et push vers ghcr.io ───────────────────────────────────
-  # Ce job a besoin de TOUTES les credentials : MLflow + S3/MinIO + ghcr.io
+  # ── 2. Build images and push to ghcr.io ───────────────────────────────────
   build-and-push:
     name: Build and Push Images
     runs-on: ubuntu-latest
     needs: unit-tests
+    timeout-minutes: 30
 
     permissions:
       contents: read
-      packages: write   # requis pour pousser vers ghcr.io
+      packages: write
 
     outputs:
       preprocessing_image: ${{ steps.image-names.outputs.preprocessing_image }}
+      image_tag:           ${{ steps.image-names.outputs.image_tag }}
 
-    # ── Credentials MLflow + S3/MinIO scopés à ce job uniquement ─────────────
     env:
-      # MLflow tracking server
       MLFLOW_TRACKING_URI:      ${{ secrets.MLFLOW_TRACKING_URI }}
       MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
       MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
-
-      # S3 / MinIO — utilisé par MLflow pour télécharger les artefacts
-      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION:    ${{ secrets.AWS_DEFAULT_REGION }}
-      AWS_ENDPOINT_URL:      ${{ secrets.AWS_ENDPOINT_URL }}
+      AWS_ACCESS_KEY_ID:        ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION:       ${{ secrets.AWS_DEFAULT_REGION }}
+      AWS_ENDPOINT_URL:         ${{ secrets.AWS_ENDPOINT_URL }}
 
     steps:
       - uses: actions/checkout@v4
@@ -96,37 +84,50 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install Python dependencies
-        run: pip install mlflow boto3
+      - name: Install PDM
+        run: pip install pdm
+
+      - name: Install build dependencies
+        run: pdm install -G build
 
       - name: Verify MLflow connection
         run: |
           python3 -c "
-          import mlflow, os
+          import mlflow, os, sys
           uri = os.environ.get('MLFLOW_TRACKING_URI', '')
           if not uri:
-              print('WARNING: MLFLOW_TRACKING_URI not set')
-              exit(0)
+              print('ERROR: MLFLOW_TRACKING_URI is not set')
+              sys.exit(1)
           mlflow.set_tracking_uri(uri)
           try:
               mlflow.search_experiments(max_results=1)
               print('MLflow connection OK')
           except Exception as e:
               print(f'MLflow connection FAILED: {e}')
-              exit(1)
+              sys.exit(1)
           "
 
       - name: Extract build parameters
         id: params
+        # Pass values through env vars to avoid shell injection
+        env:
+          WD_RUN_ID:       ${{ github.event.inputs.run_id }}
+          WD_MODEL_SOURCE: ${{ github.event.inputs.model_source }}
+          RD_RUN_ID:       ${{ github.event.client_payload.data.run_id }}
+          RD_MODEL_SOURCE: ${{ github.event.client_payload.data.source }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "run_id=${{ github.event.inputs.run_id }}"              >> $GITHUB_OUTPUT
-            echo "model_source=${{ github.event.inputs.model_source }}"  >> $GITHUB_OUTPUT
+            echo "run_id=${WD_RUN_ID}"           >> $GITHUB_OUTPUT
+            echo "model_source=${WD_MODEL_SOURCE}" >> $GITHUB_OUTPUT
           else
-            echo "run_id=${{ github.event.client_payload.data.run_id }}"       >> $GITHUB_OUTPUT
-            echo "model_source=${{ github.event.client_payload.data.source }}" >> $GITHUB_OUTPUT
+            echo "run_id=${RD_RUN_ID}"           >> $GITHUB_OUTPUT
+            echo "model_source=${RD_MODEL_SOURCE}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -136,22 +137,26 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push images
+        env:
+          RUN_ID:       ${{ steps.params.outputs.run_id }}
+          MODEL_SOURCE: ${{ steps.params.outputs.model_source }}
         run: |
-          BUILD_ARGS="${{ steps.params.outputs.run_id }}"
-          MODEL_SOURCE="${{ steps.params.outputs.model_source }}"
+          BUILD_ARGS="$RUN_ID"
           if [ -n "$MODEL_SOURCE" ]; then
             BUILD_ARGS="$BUILD_ARGS --model-source $MODEL_SOURCE"
           fi
-          ./build.sh $BUILD_ARGS --tag latest
+          # Tags are auto-generated by build.sh: latest, v{version}, v{version}-{run_id[:8]}
+          ./build.sh $BUILD_ARGS
 
       - name: Compute image names
         id: image-names
+        env:
+          RUN_ID: ${{ steps.params.outputs.run_id }}
         run: |
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          RUN_ID="${{ steps.params.outputs.run_id }}"
 
-          IMAGE_SUFFIX=$(python3 - <<'EOF'
-          import mlflow, os, re
+          IMAGE_INFO=$(python3 - <<'EOF'
+          import mlflow, os, re, sys
 
           run_id = os.environ["RUN_ID"]
           mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", ""))
@@ -164,24 +169,28 @@ jobs:
               ver  = (run.data.tags.get("version")
                       or run.data.tags.get("model_version")
                       or run_id[:8])
-          except Exception:
+          except Exception as e:
+              print(f"WARNING: could not fetch run metadata: {e}", file=sys.stderr)
               name, ver = "unknown", run_id[:8]
 
           clean = lambda s: re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")
-          print(f"preprocessing-{clean(name)}-{clean(ver)}")
+          # image name has no version — version lives in the tag
+          print(f"preprocessing-{clean(name)}|v{clean(ver)}")
           EOF
           )
 
-          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${IMAGE_SUFFIX}:latest" >> $GITHUB_OUTPUT
-        env:
-          RUN_ID: ${{ steps.params.outputs.run_id }}
+          IMAGE_NAME=$(echo "$IMAGE_INFO" | cut -d'|' -f1)
+          VERSION_TAG=$(echo "$IMAGE_INFO" | cut -d'|' -f2)
 
-  # ── 3. Smoke tests ─────────────────────────────────────────────────────────
-  # Pas besoin de MLflow ni d'AWS : on pull l'image déjà buildée et on teste l'API
+          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${IMAGE_NAME}:latest"        >> $GITHUB_OUTPUT
+          echo "image_tag=${VERSION_TAG}"                                                >> $GITHUB_OUTPUT
+
+  # ── 3. Smoke tests ────────────────────────────────────────────────────────
   smoke-tests:
     name: Smoke Tests (Preprocessing Container)
     runs-on: ubuntu-latest
     needs: build-and-push
+    timeout-minutes: 10
 
     steps:
       - name: Login to GitHub Container Registry
@@ -227,28 +236,67 @@ jobs:
           print('PASS /health')
           "
 
-      - name: Smoke test — /preprocess (single record)
+      - name: Smoke test — /preprocess returns N_FEATURES floats
         run: |
+          # Send a realistic ZTF AVRO alert and verify the output shape
           RESP=$(curl -sf -X POST http://localhost:8000/preprocess \
             -H "Content-Type: application/json" \
-            -d '{"data": {"objectId": "ZTF21smoketest", "value": 1.0}}')
+            -d '{
+              "data": {
+                "objectId": "ZTF21smoketest",
+                "candid": 1234567890,
+                "candidate": {
+                  "rb": 0.92, "drb": 0.87, "classtar": 0.1,
+                  "fwhm": 2.4, "elong": 1.02,
+                  "magpsf": 19.3, "sigmapsf": 0.04,
+                  "diffmaglim": 20.8, "ndethist": 3, "scorr": 12.1,
+                  "chinr": 0.98, "sharpnr": 0.01,
+                  "sgscore1": 0.7, "distpsnr1": 0.3,
+                  "isdiffpos": "t"
+                },
+                "prv_candidates": [
+                  {"jd": 2459995.5, "magpsf": 19.1, "isdiffpos": "t", "fid": 1},
+                  {"jd": 2459990.3, "magpsf": 19.4, "isdiffpos": "t", "fid": 2}
+                ]
+              }
+            }')
           echo "Response: $RESP"
           echo "$RESP" | python3 -c "
           import sys, json
-          json.load(sys.stdin)   # valid JSON = pass
-          print('PASS /preprocess')
+          d = json.load(sys.stdin)
+          features = d.get('features') or d.get('result') or d.get('data') or d
+          if isinstance(features, dict):
+              features = list(features.values())
+          assert isinstance(features, list), f'Expected a list of features, got: {type(features)}'
+          assert len(features) == 18, f'Expected 18 features (N_FEATURES), got {len(features)}: {features}'
+          assert all(isinstance(v, (int, float)) for v in features), f'All features must be numeric, got: {features}'
+          print(f'PASS /preprocess — {len(features)} features returned')
           "
 
       - name: Smoke test — /preprocess/batch
         run: |
           RESP=$(curl -sf -X POST http://localhost:8000/preprocess/batch \
             -H "Content-Type: application/json" \
-            -d '{"data": [{"objectId": "ZTF21a"}, {"objectId": "ZTF21b"}]}')
+            -d '{
+              "data": [
+                {
+                  "objectId": "ZTF21a", "candid": 1,
+                  "candidate": {"rb": 0.9, "drb": 0.85, "magpsf": 19.0, "isdiffpos": "t"}
+                },
+                {
+                  "objectId": "ZTF21b", "candid": 2,
+                  "candidate": {"rb": 0.1, "drb": 0.05, "magpsf": 18.0, "isdiffpos": "f"}
+                }
+              ]
+            }')
           echo "Response: $RESP"
           echo "$RESP" | python3 -c "
           import sys, json
-          json.load(sys.stdin)   # valid JSON = pass
-          print('PASS /preprocess/batch')
+          d = json.load(sys.stdin)
+          results = d.get('features') or d.get('results') or d.get('data') or d
+          assert isinstance(results, list), f'Expected a list, got: {type(results)}'
+          assert len(results) == 2, f'Expected 2 results for 2 alerts, got {len(results)}'
+          print(f'PASS /preprocess/batch — {len(results)} results returned')
           "
 
       - name: Show logs on failure

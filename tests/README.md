@@ -1,60 +1,34 @@
 # Tests
 
-This directory contains unit tests for the  project.
+Unit and contract tests for the preprocessing pipeline.
 
-**Note:** If you only want to run tests without coverage, you can install just pytest:
-
-```bash
-pip install pytest pytest-mock
-```
-
-For coverage reports, install pytest-cov:
+## Setup
 
 ```bash
-pip install pytest-cov
+pdm install -dG test
 ```
 
-## Running Tests
-
-Run all tests:
+## Running tests
 
 ```bash
-pytest
+# Unit tests only (excludes integration)
+pdm run test
+
+# All tests including integration
+pdm run test-all
+
+# Specific file
+pdm run pytest tests/test_preprocessing_contract.py
+
+# With coverage (HTML report in htmlcov/)
+pdm run pytest tests/ --cov=. --cov-report=html
 ```
 
-Run with coverage:
+## Test structure
 
-```bash
-pytest --cov=runner --cov=build_scripts --cov-report=html
-```
+- `test_preprocessing_contract.py` — contract tests for `training/preprocessing.py` (run in CI before Docker build)
+- `test_runner.py` — tests for the runner module
+- `test_build_image.py` — tests for the build_image module
+- `conftest.py` — shared fixtures
 
-Run specific test file:
-
-```bash
-pytest tests/test_runner.py
-```
-
-Run specific test:
-
-```bash
-pytest tests/test_runner.py::TestLoadPreprocessing::test_load_preprocessing_function
-```
-
-Run tests in verbose mode:
-
-```bash
-pytest -v
-```
-
-## Test Structure
-
-- `conftest.py`: Pytest fixtures and configuration
-- `test_runner.py`: Tests for the runner module
-- `test_build_image.py`: Tests for the build_image module
-
-## Coverage
-
-Coverage reports are generated in:
-- Terminal: `--cov-report=term-missing`
-- HTML: `htmlcov/index.html`
-- XML: `coverage.xml`
+Coverage reports: `htmlcov/index.html` (HTML), `coverage.xml` (XML/CI).

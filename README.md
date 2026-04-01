@@ -47,7 +47,7 @@ Le nom d'image est généré automatiquement depuis les métadonnées MLflow :
 
 ```bash
 # Installer les dépendances
-pip install -r requirements.txt
+pip install pdm && pdm install -G build
 
 # Configurer MLflow
 export MLFLOW_TRACKING_URI="http://127.0.0.1:5000"

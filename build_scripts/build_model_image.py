@@ -83,34 +83,45 @@ def build_mlflow_base_image(model_uri: str, base_image_name: str) -> str:
 def build_wrapper_image(
     base_image: str,
     final_image_name: str,
-    image_tag: str = "latest",
+    image_tags: list[str] = None,
     dockerfile_path: str = "docker/Dockerfile.model",
     build_context: str = ".",
-) -> str:
+) -> list[str]:
     """
     Step 2 — wrap the base image to add the Kafka bridge.
 
+    Builds once with the first tag then applies the remaining tags via
+    ``docker tag``.  Matches the tagging scheme of the preprocessing image
+    so the two are always versioned as a matched pair::
+
+        model-ztf-real-bogus:latest       # current champion
+        model-ztf-real-bogus:v3           # stable version ref
+        model-ztf-real-bogus:v3-abc12345  # immutable build
+
     Args:
         base_image:       Full reference to the base image produced in step 1
-        final_image_name: Name for the final image (without tag)
-        image_tag:        Tag for the final image
+        final_image_name: Name for the final image without tag
+        image_tags:       Tags to apply.  Defaults to ["latest"].
         dockerfile_path:  Path to ``docker/Dockerfile.model``
         build_context:    Docker build context (repo root)
 
     Returns:
-        Full image reference, e.g. ``model-foo-3:latest``
+        list[str]: All tagged image names produced.
     """
+    if image_tags is None:
+        image_tags = ["latest"]
+
     # Dockerfile.model must exist
     if not Path(dockerfile_path).exists():
         raise FileNotFoundError(f"Dockerfile not found: {dockerfile_path}")
 
-    full = f"{final_image_name}:{image_tag}"
+    primary = f"{final_image_name}:{image_tags[0]}"
     _stream_run(
         [
             "docker",
             "build",
             "-t",
-            full,
+            primary,
             "-f",
             dockerfile_path,
             "--build-arg",
@@ -118,8 +129,16 @@ def build_wrapper_image(
             build_context,
         ]
     )
-    logger.info("Wrapper image ready: %s", full)
-    return full
+    logger.info("Wrapper image built: %s", primary)
+
+    all_images = [primary]
+    for tag in image_tags[1:]:
+        extra = f"{final_image_name}:{tag}"
+        subprocess.run(["docker", "tag", primary, extra], check=True)
+        logger.info("Tagged: %s", extra)
+        all_images.append(extra)
+
+    return all_images
 
 
 def main() -> None:
@@ -138,8 +157,13 @@ def main() -> None:
     parser.add_argument(
         "--tag",
         "-t",
-        default="latest",
-        help="Tag for the final image (default: latest)",
+        action="append",
+        dest="tags",
+        metavar="TAG",
+        help=(
+            "Tag for the final image (can be repeated).  "
+            "If omitted, auto-generates: latest, v{version}, v{version}-{run_id[:8]}"
+        ),
     )
     parser.add_argument(
         "--dockerfile",
@@ -160,8 +184,18 @@ def main() -> None:
     name_clean = sanitize_docker_name(args.model_name)
     ver_clean = sanitize_docker_name(str(args.model_version))
 
+    # Base image is a local build artifact — keep version in its name so
+    # multiple base images can coexist during a rebuild without conflict.
     base_image_name = f"model-{name_clean}-{ver_clean}-base"
-    final_image_name = f"model-{name_clean}-{ver_clean}"
+    # Final image: version lives in the tag, not in the name.
+    final_image_name = f"model-{name_clean}"
+
+    # Determine tags — auto-generate if none supplied.
+    # build.sh always passes the full 3-tag set (latest, v{ver}, v{ver}-{run_id[:8]}).
+    # When invoked directly without --tag, fall back to latest + v{ver}.
+    tags = args.tags or ["latest", f"v{ver_clean}"]
+    if not args.tags:
+        logger.info("Auto-generated tags: %s", tags)
 
     try:
         if args.skip_base_build:
@@ -170,22 +204,23 @@ def main() -> None:
         else:
             base_image = build_mlflow_base_image(args.model_source, base_image_name)
 
-        final_image = build_wrapper_image(
+        all_images = build_wrapper_image(
             base_image=base_image,
             final_image_name=final_image_name,
-            image_tag=args.tag,
+            image_tags=tags,
             dockerfile_path=args.dockerfile,
         )
 
-        logger.info("Build complete: %s", final_image)
+        logger.info("Build complete: %s", all_images)
         logger.info("")
-        logger.info("Run (API only):       docker run -p 8080:8080 %s", final_image)
+        primary = all_images[0]
+        logger.info("Run (API only):       docker run -p 8080:8080 %s", primary)
         logger.info("Run (with Kafka):     docker run \\")
         logger.info("                        -e KAFKA_ENABLED=true \\")
         logger.info("                        -e KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \\")
         logger.info("                        -e INPUT_TOPIC=preprocessed \\")
         logger.info("                        -e OUTPUT_TOPIC=predictions \\")
-        logger.info("                        -p 8080:8080 %s", final_image)
+        logger.info("                        -p 8080:8080 %s", primary)
 
     except subprocess.CalledProcessError as e:
         logger.error("Build step failed (exit code %d)", e.returncode)

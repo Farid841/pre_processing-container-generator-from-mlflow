@@ -118,15 +118,15 @@ def run_build(build_id: str, request: BuildRequest):
         if request.image_name:
             image_name = request.image_name
         else:
-            image_name = build_image_name(model_name, version, type_name)
+            image_name = build_image_name(model_name, type_name)
         builds[build_id]["image_name"] = image_name
         builds[build_id]["logs"].append(f"Image name: {image_name}")
 
         # Build the Docker image
-        full_image_name = build_docker_image(
+        all_images = build_docker_image(
             run_id=request.run_id,
             image_name=image_name,
-            image_tag=request.tag,
+            image_tags=[request.tag] if request.tag else None,
             preprocessing_path=request.preprocessing_path,
             python_version=request.python_version,
             model_name=model_name,
@@ -134,10 +134,10 @@ def run_build(build_id: str, request: BuildRequest):
             component_type=type_name,
         )
 
-        builds[build_id]["full_image_name"] = full_image_name
+        builds[build_id]["full_image_name"] = all_images[0]
         builds[build_id]["status"] = BuildStatus.SUCCESS
         builds[build_id]["finished_at"] = datetime.now()
-        builds[build_id]["logs"].append(f"✅ Build successful: {full_image_name}")
+        builds[build_id]["logs"].append(f"✅ Build successful: {all_images}")
 
     except Exception as e:
         builds[build_id]["status"] = BuildStatus.FAILED

@@ -28,7 +28,6 @@ NC='\033[0m' # No Color
 
 # Parse arguments
 MODEL_SOURCE=""
-TAG="latest"
 PREPROCESSING_PATH=""
 DOCKERFILE="docker/Dockerfile"
 PYTHON_VERSION=""
@@ -49,7 +48,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ] || [ "$1" = "-?" ]; then
     echo "Options:"
     echo "  --model-source        MLflow model URI (e.g., models:/model-name/1)"
     echo "                        If provided, builds model serving image"
-    echo "  --tag, -t             Docker image tag (default: latest)"
+    echo "  --tag, -t             (ignored — tags are auto-generated: latest, v{version}, v{version}-{run_id[:8]})"
     echo "  --preprocessing-path  Path to preprocessing in MLflow (default: auto-detect)"
     echo "  --dockerfile          Path to Dockerfile (default: docker/Dockerfile)"
     echo "  --python-version      Python version (e.g., 3.11, 3.12)"
@@ -90,7 +89,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --tag|-t)
-            TAG="$2"
+            # Tags are auto-generated; this flag is accepted but ignored for backwards compat
             shift 2
             ;;
         --preprocessing-path)
@@ -214,30 +213,30 @@ sanitize_image_name() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/-\+/-/g' | sed 's/^-\|-$//g'
 }
 
-# Function to push image to registry
+# Function to push all tags of an image to the registry
+# Usage: push_image <image_name> <tag1> [tag2] [tag3] ...
 push_image() {
     local image_name=$1
-    local tag=$2
+    shift
+    local tags=("$@")
 
-    if [ "$PUSH_TO_REGISTRY" = true ]; then
+    [ "$PUSH_TO_REGISTRY" = true ] || return 0
+
+    for tag in "${tags[@]}"; do
         if [ -n "$GITHUB_ACTIONS" ]; then
-            # GitHub Container Registry
             local registry_image="${GITHUB_REGISTRY}/${GITHUB_REPOSITORY_LOWER}/${image_name}"
-            echo -e "${BLUE}📤 Pushing ${image_name}:${tag} to ${registry_image}:${tag}${NC}"
+            echo -e "${BLUE}📤 Pushing ${image_name}:${tag} → ${registry_image}:${tag}${NC}"
             docker tag "${image_name}:${tag}" "${registry_image}:${tag}"
             docker push "${registry_image}:${tag}"
             echo -e "${GREEN}✅ Pushed ${registry_image}:${tag}${NC}"
-        else
-            # Generic registry (if DOCKER_REGISTRY is set)
-            if [ -n "$DOCKER_REGISTRY" ]; then
-                local registry_image="${DOCKER_REGISTRY}/${image_name}"
-                echo -e "${BLUE}📤 Pushing ${image_name}:${tag} to ${registry_image}:${tag}${NC}"
-                docker tag "${image_name}:${tag}" "${registry_image}:${tag}"
-                docker push "${registry_image}:${tag}"
-                echo -e "${GREEN}✅ Pushed ${registry_image}:${tag}${NC}"
-            fi
+        elif [ -n "$DOCKER_REGISTRY" ]; then
+            local registry_image="${DOCKER_REGISTRY}/${image_name}"
+            echo -e "${BLUE}📤 Pushing ${image_name}:${tag} → ${registry_image}:${tag}${NC}"
+            docker tag "${image_name}:${tag}" "${registry_image}:${tag}"
+            docker push "${registry_image}:${tag}"
+            echo -e "${GREEN}✅ Pushed ${registry_image}:${tag}${NC}"
         fi
-    fi
+    done
 }
 
 echo -e "${GREEN}🚀 Starting auto-build from MLflow...${NC}"
@@ -252,12 +251,21 @@ MODEL_INFO=$(get_model_info)
 MODEL_NAME=$(echo "$MODEL_INFO" | cut -d'|' -f1)
 MODEL_VERSION=$(echo "$MODEL_INFO" | cut -d'|' -f2)
 
+# Compute tags from MLflow metadata
+# Tags: latest  (current champion)
+#       v{ver}  (stable version ref, e.g. v3)
+#       v{ver}-{run_id[:8]}  (immutable build artifact)
+CLEAN_VERSION=$(sanitize_image_name "$MODEL_VERSION")
+TAGS=("latest" "v${CLEAN_VERSION}" "v${CLEAN_VERSION}-${RUN_ID:0:8}")
+
 # Build preprocessing image
 if [ -n "$MODEL_SOURCE" ]; then
     echo -e "${GREEN}📦 Step 1/2: Building preprocessing image...${NC}"
 else
     echo -e "${GREEN}📦 Building preprocessing image...${NC}"
 fi
+echo -e "${BLUE}   Tags: ${TAGS[*]}${NC}"
+
 PREPROCESSING_ARGS=()
 if [ -n "$PREPROCESSING_PATH" ]; then
     PREPROCESSING_ARGS+=(--preprocessing-path "$PREPROCESSING_PATH")
@@ -268,9 +276,9 @@ fi
 if [ -n "$PYTHON_VERSION" ]; then
     PREPROCESSING_ARGS+=(--python-version "$PYTHON_VERSION")
 fi
-if [ -n "$TAG" ] && [ "$TAG" != "latest" ]; then
-    PREPROCESSING_ARGS+=(--tag "$TAG")
-fi
+for tag in "${TAGS[@]}"; do
+    PREPROCESSING_ARGS+=(--tag "$tag")
+done
 
 python3 build_scripts/build_image.py "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
 
@@ -279,19 +287,21 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Get preprocessing image name
-PREPROCESSING_IMAGE_NAME=$(sanitize_image_name "preprocessing-${MODEL_NAME}-${MODEL_VERSION}")
-echo -e "${GREEN}✅ Preprocessing image built: ${PREPROCESSING_IMAGE_NAME}:${TAG}${NC}"
+# Image name: no version in name — version lives in the tag
+PREPROCESSING_IMAGE_NAME=$(sanitize_image_name "preprocessing-${MODEL_NAME}")
+echo -e "${GREEN}✅ Preprocessing image built: ${PREPROCESSING_IMAGE_NAME} [${TAGS[*]}]${NC}"
 
-# Push preprocessing image if needed
-push_image "$PREPROCESSING_IMAGE_NAME" "$TAG"
+# Push all tags
+push_image "$PREPROCESSING_IMAGE_NAME" "${TAGS[@]}"
 
 # Build model image if model_source is provided
 if [ -n "$MODEL_SOURCE" ]; then
     echo ""
     echo -e "${GREEN}📦 Step 2/2: Building model serving image...${NC}"
 
-    MODEL_IMAGE_NAME=$(sanitize_image_name "model-${MODEL_NAME}-${MODEL_VERSION}")
+    # Image name: no version — version lives in the tag (mirrors preprocessing naming)
+    MODEL_IMAGE_NAME=$(sanitize_image_name "model-${MODEL_NAME}")
+    echo -e "${BLUE}   Tags: ${TAGS[*]}${NC}"
 
     # Determine model URI
     MODEL_URI="$MODEL_SOURCE"
@@ -309,29 +319,38 @@ if [ -n "$MODEL_SOURCE" ]; then
     fi
 
     # Build model image (base via mlflow + wrapper with kafka bridge)
+    # Pass the same TAGS as the preprocessing image so both are always in sync.
     echo -e "${BLUE}   Building with: build_model_image.py (2-step: mlflow base + kafka bridge)${NC}"
+    MODEL_TAG_ARGS=()
+    for tag in "${TAGS[@]}"; do
+        MODEL_TAG_ARGS+=(--tag "$tag")
+    done
     python3 build_scripts/build_model_image.py \
         "$MODEL_URI" \
         "$MODEL_NAME" \
         "$MODEL_VERSION" \
-        --tag "$TAG"
+        "${MODEL_TAG_ARGS[@]}"
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Model build failed${NC}"
         exit 1
     fi
 
-    echo -e "${GREEN}✅ Model image built: ${MODEL_IMAGE_NAME}:${TAG}${NC}"
+    echo -e "${GREEN}✅ Model image built: ${MODEL_IMAGE_NAME} [${TAGS[*]}]${NC}"
 
-    # Push model image if needed
-    push_image "$MODEL_IMAGE_NAME" "$TAG"
+    # Push all tags for model image
+    push_image "$MODEL_IMAGE_NAME" "${TAGS[@]}"
 fi
 
 echo ""
 echo -e "${GREEN}✅ All builds completed successfully!${NC}"
 echo ""
 echo "Built images:"
-echo "  - ${PREPROCESSING_IMAGE_NAME}:${TAG}"
+for tag in "${TAGS[@]}"; do
+    echo "  - ${PREPROCESSING_IMAGE_NAME}:${tag}"
+done
 if [ -n "$MODEL_SOURCE" ]; then
-    echo "  - ${MODEL_IMAGE_NAME}:${TAG}"
+    for tag in "${TAGS[@]}"; do
+        echo "  - ${MODEL_IMAGE_NAME}:${tag}"
+    done
 fi

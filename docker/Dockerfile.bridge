@@ -14,8 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python dependencies
-COPY requirements-bridge.txt /app/
-RUN pip install --no-cache-dir -r requirements-bridge.txt
+RUN pip install --no-cache-dir \
+    "confluent-kafka>=2.3.0" \
+    "fastavro>=1.9.0" \
+    "requests>=2.31.0"
 
 # Copy the kafka_bridge module
 COPY kafka_bridge/ /app/kafka_bridge/
