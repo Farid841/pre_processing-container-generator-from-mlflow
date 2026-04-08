@@ -155,7 +155,7 @@ fi
 
 # Function to get model info from MLflow
 get_model_info() {
-    python3 -c "
+    pdm run python -c "
 import mlflow
 import os
 import sys
@@ -172,7 +172,7 @@ except Exception as e:
 
 # Function to get model URI from run (auto-detect)
 get_model_uri_from_run() {
-    python3 -c "
+    pdm run python -c "
 import mlflow
 import os
 import sys
@@ -280,7 +280,7 @@ for tag in "${TAGS[@]}"; do
     PREPROCESSING_ARGS+=(--tag "$tag")
 done
 
-python3 build_scripts/build_image.py "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
+pdm run python build_scripts/build_image.py "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Preprocessing build failed${NC}"
@@ -325,7 +325,7 @@ if [ -n "$MODEL_SOURCE" ]; then
     for tag in "${TAGS[@]}"; do
         MODEL_TAG_ARGS+=(--tag "$tag")
     done
-    python3 build_scripts/build_model_image.py \
+    pdm run python build_scripts/build_model_image.py \
         "$MODEL_URI" \
         "$MODEL_NAME" \
         "$MODEL_VERSION" \

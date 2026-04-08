@@ -111,6 +111,10 @@ jobs:
           RUN_ID:       ${{ steps.params.outputs.run_id }}
           MODEL_SOURCE: ${{ steps.params.outputs.model_source }}
         run: |
+          if [ -z "$RUN_ID" ]; then
+            echo "ERROR: run_id is required but was not provided in the event payload"
+            exit 1
+          fi
           BUILD_ARGS="$RUN_ID"
           if [ -n "$MODEL_SOURCE" ]; then
             BUILD_ARGS="$BUILD_ARGS --model-source $MODEL_SOURCE"
