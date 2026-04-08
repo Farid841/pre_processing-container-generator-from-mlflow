@@ -280,15 +280,15 @@ for tag in "${TAGS[@]}"; do
     PREPROCESSING_ARGS+=(--tag "$tag")
 done
 
-pdm run python -m build_scripts.build_image "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
+# Image name: no version in name — version lives in the tag
+PREPROCESSING_IMAGE_NAME=$(sanitize_image_name "preprocessing-${MODEL_NAME}")
+
+pdm run python -m build_scripts.build_image "$RUN_ID" "$PREPROCESSING_IMAGE_NAME" "${PREPROCESSING_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Preprocessing build failed${NC}"
     exit 1
 fi
-
-# Image name: no version in name — version lives in the tag
-PREPROCESSING_IMAGE_NAME=$(sanitize_image_name "preprocessing-${MODEL_NAME}")
 echo -e "${GREEN}✅ Preprocessing image built: ${PREPROCESSING_IMAGE_NAME} [${TAGS[*]}]${NC}"
 
 # Push all tags
