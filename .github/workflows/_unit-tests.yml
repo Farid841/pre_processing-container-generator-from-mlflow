@@ -23,6 +23,13 @@ jobs:
       - name: Install PDM
         run: pip install pdm
 
+      - name: Cache PDM packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pdm
+          key: pdm-test-${{ runner.os }}-${{ hashFiles('pdm.lock') }}
+          restore-keys: pdm-test-${{ runner.os }}-
+
       - name: Install test dependencies
         run: pdm install -dG test
 

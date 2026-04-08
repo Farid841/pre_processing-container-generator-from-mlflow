@@ -473,9 +473,26 @@ def build_docker_image(
     logger.info(f"Building Docker image: {primary_image}")
     logger.info(f"Will also tag as: {[f'{image_name}:{t}' for t in image_tags[1:]]}")
 
+    in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
     try:
-        stream_run(
-            [
+        if in_ci:
+            build_cmd = [
+                "docker",
+                "buildx",
+                "build",
+                "--cache-from",
+                "type=gha",
+                "--cache-to",
+                "type=gha,mode=max",
+                "--load",
+                "-t",
+                primary_image,
+                "-f",
+                str(temp_dockerfile),
+                str(base_path),
+            ]
+        else:
+            build_cmd = [
                 "docker",
                 "build",
                 "-t",
@@ -484,7 +501,7 @@ def build_docker_image(
                 str(temp_dockerfile),
                 str(base_path),
             ]
-        )
+        stream_run(build_cmd)
         logger.info(f"✅ Image built: {primary_image}")
 
     except subprocess.CalledProcessError as e:
