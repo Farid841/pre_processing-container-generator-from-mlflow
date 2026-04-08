@@ -29,7 +29,12 @@ import sys
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
-from build_scripts.utils import sanitize_kafka_topic as _sanitize_kafka
+
+def _sanitize_kafka(name: str) -> str:
+    import re
+
+    return re.sub(r"[^a-zA-Z0-9-_.]", "-", name.lower())
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
