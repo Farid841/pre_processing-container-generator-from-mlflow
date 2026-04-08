@@ -280,7 +280,7 @@ for tag in "${TAGS[@]}"; do
     PREPROCESSING_ARGS+=(--tag "$tag")
 done
 
-pdm run python build_scripts/build_image.py "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
+pdm run python -m build_scripts.build_image "$RUN_ID" auto "${PREPROCESSING_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ Preprocessing build failed${NC}"
@@ -325,7 +325,7 @@ if [ -n "$MODEL_SOURCE" ]; then
     for tag in "${TAGS[@]}"; do
         MODEL_TAG_ARGS+=(--tag "$tag")
     done
-    pdm run python build_scripts/build_model_image.py \
+    pdm run python -m build_scripts.build_model_image \
         "$MODEL_URI" \
         "$MODEL_NAME" \
         "$MODEL_VERSION" \
