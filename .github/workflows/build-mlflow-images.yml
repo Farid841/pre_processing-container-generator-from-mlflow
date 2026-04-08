@@ -63,7 +63,7 @@ jobs:
 
       - name: Verify MLflow connection
         run: |
-          python3 -c "
+          pdm run python -c "
           import mlflow, os, sys
           uri = os.environ.get('MLFLOW_TRACKING_URI', '')
           if not uri:
@@ -124,7 +124,7 @@ jobs:
         run: |
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
-          IMAGE_INFO=$(python3 - <<'EOF'
+          IMAGE_INFO=$(pdm run python - <<'EOF'
           import mlflow, os, re, sys
 
           run_id = os.environ["RUN_ID"]
