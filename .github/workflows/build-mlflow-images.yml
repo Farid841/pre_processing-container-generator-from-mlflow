@@ -274,7 +274,7 @@ jobs:
           echo "$RESP" | python3 -c "
           import sys, json
           d = json.load(sys.stdin)
-          results = d.get('features') or d.get('results') or d.get('data') or d
+          results = d.get('features') or d.get('result') or d.get('results') or d.get('data') or d
           assert isinstance(results, list), f'Expected a list, got: {type(results)}'
           assert len(results) == 2, f'Expected 2 results for 2 alerts, got {len(results)}'
           print(f'PASS /preprocess/batch — {len(results)} results returned')
