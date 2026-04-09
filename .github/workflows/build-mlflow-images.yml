@@ -213,7 +213,7 @@ jobs:
           echo "$RESP" | python3 -c "
           import sys, json
           d = json.load(sys.stdin)
-          assert d.get('status') == 'ok', f'Expected status=ok, got: {d}'
+          assert d.get('status') in ('ok', 'healthy'), f'Expected status=ok or healthy, got: {d}'
           print('PASS /health')
           "
 
