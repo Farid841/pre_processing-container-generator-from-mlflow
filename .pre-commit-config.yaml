@@ -10,6 +10,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^helm/.*templates/  # Go templates {{ }} ne sont pas du YAML valide
       - id: check-added-large-files
       - id: check-json
       - id: check-toml
