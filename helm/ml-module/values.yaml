@@ -1,0 +1,75 @@
+
+image:
+  repository: "ghcr.io/"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+module:
+  name: ""              # ex: supernovae, microlensing
+  version: ""           # ex: v1, v2
+  componentType: ""     # preprocessing ou model
+  mode: ""              # streaming ou ondemand
+
+
+kafka:
+  bootstrapServers: ""        # obligatoire : ex: kafka.kafka.svc.cluster.local:9092
+  inputTopic: ""              # obligatoire : topic source
+  outputTopic: ""             # obligatoire : topic destination
+  consumerGroupId: ""         # obligatoire : unique par install helm
+  topicSuffix: "cleaned"
+  securityProtocol: PLAINTEXT
+  autoOffsetReset: "latest"   # latest = commence aux nouveaux messages (streaming)
+                              # earliest = rejoue depuis le début (debug/replay)
+
+  # Format des messages
+  inputFormat: "avro"         # avro pour alertes ZTF brutes, json pour on-demand
+  outputFormat: "json"
+  avroSchemaPath: "/app/schemas/ztf_alert_v3.3.avsc"
+  skipCutouts: "true"         # ignore les images dans les alertes ZTF (réduit la taille)
+
+  # Batching
+  batchSize: "1000"            # nb de messages traités ensemble
+  batchTimeoutMs: "1000"      # temps max d'attente pour remplir un batch (ms)
+
+  # Credentials SASL (uniquement si securityProtocol: SASL_PLAINTEXT ou SASL_SSL)
+  sasl:
+    enabled: false
+    mechanism: PLAIN
+    username: ""
+    password: ""
+
+api:
+  port: 8000
+  host: "0.0.0.0"
+  healthPath: "/health"   # /ping pour les containers MLflow model
+
+logging:
+  level: "INFO"               # DEBUG, INFO, WARNING, ERROR
+  format: "json"              # json (prod) ou text (dev)
+
+
+keda:
+  enabled: true
+  minReplicas: 1        # toujours au moins 1 pod (le service ne s'éteint jamais)
+  maxReplicas: 3        # limité par le nb de partitions Kafka du inputTopic
+  # Nb de messages en attente par pod avant de scaler
+  # ondemand : valeur basse (l'user attend) → scale vite
+  # streaming : valeur haute (les alertes peuvent attendre) → scale moins vite
+  lagThreshold: "100"
+
+
+resources:
+  requests:
+    cpu: 200m           # garanti au pod au démarrage
+    memory: 256Mi
+  limits:
+    cpu: "1"            # jamais au-dessus de 1 CPU
+    memory: 1Gi
+
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1       # K8s ne peut pas tuer tous les pods en même temps
+
+
+namespace: fink

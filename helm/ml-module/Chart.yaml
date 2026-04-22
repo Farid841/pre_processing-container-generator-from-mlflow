@@ -1,0 +1,23 @@
+apiVersion: v2
+name: ml-module
+description: >
+  Runner générique pour les science modules Fink.
+  Charge un modèle MLflow (preprocessing ou model) et le connecte à Kafka.
+  1 chart = N installs (1 par module x 1 par mode streaming/ondemand).
+
+type: application
+
+version: 0.0.1
+
+# Version de l'application — alignée sur la version du runner (pas du modèle ML)
+appVersion: "1.0.0"
+
+keywords:
+  - fink
+  - kafka
+  - mlflow
+  - streaming
+  - astronomy
+
+maintainers:
+  - name: Farid

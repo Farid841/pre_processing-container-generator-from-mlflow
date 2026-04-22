@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ml-module.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ml-module.labels" . | nindent 4 }}
+spec:
+  # KEDA gère le nombre de replicas → on ne le fixe pas ici
+  # Si KEDA est désactivé, on démarre avec 1 replica
+  {{- if not .Values.keda.enabled }}
+  replicas: 1
+  {{- end }}
+
+  selector:
+    matchLabels:
+      {{- include "ml-module.selectorLabels" . | nindent 6 }}
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # zero-downtime : nouveau pod healthy avant de tuer l'ancien
+      maxSurge: 1         # 1 pod supplémentaire pendant la transition
+
+  template:
+    metadata:
+      labels:
+        {{- include "ml-module.labels" . | nindent 8 }}
+      annotations:
+        # Checksum du ConfigMap : si la config change → cette valeur change
+        # → K8s détecte un changement dans le template → rolling update automatique
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+    spec:
+      # Graceful shutdown : laisse 30s au Kafka producer pour flush ses messages
+      terminationGracePeriodSeconds: 30
+
+      # Sécurité : le container tourne en non-root (uid 1000, défini dans le Dockerfile)
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+
+      containers:
+        - name: runner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+              protocol: TCP
+
+          # Injecte toutes les variables du ConfigMap comme variables d'environnement
+          envFrom:
+            - configMapRef:
+                name: {{ include "ml-module.fullname" . }}
+            {{- if .Values.kafka.sasl.enabled }}
+            - secretRef:
+                name: {{ include "ml-module.fullname" . }}
+            {{- end }}
+
+          # startupProbe : donne le temps au modèle MLflow de charger au démarrage
+          # K8s attend jusqu'à 24 × 5s = 120s avant de considérer le pod en échec
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.healthPath }}
+              port: http
+            failureThreshold: 24
+            periodSeconds: 5
+
+          # readinessProbe : le pod reçoit du trafic uniquement si /health répond OK
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.healthPath }}
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # livenessProbe : restart le pod si /health ne répond plus
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.healthPath }}
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}

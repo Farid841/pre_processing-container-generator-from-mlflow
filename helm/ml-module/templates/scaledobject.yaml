@@ -1,0 +1,29 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "ml-module.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ml-module.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ml-module.fullname" . }}   # quel Deployment KEDA doit scaler
+
+  minReplicaCount: {{ .Values.keda.minReplicas }} # jamais en dessous (service toujours up)
+  maxReplicaCount: {{ .Values.keda.maxReplicas }} # limité par nb de partitions Kafka
+
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ .Values.kafka.bootstrapServers }}
+        consumerGroup: {{ .Values.kafka.consumerGroupId }}
+        topic: {{ .Values.kafka.inputTopic }}
+        # Nb de messages en attente par pod avant de créer un pod supplémentaire
+        # streaming → 100 (alertes peuvent attendre)
+        # ondemand  → 10  (user attend une réponse)
+        lagThreshold: {{ .Values.keda.lagThreshold | quote }}
+        offsetResetPolicy: latest
+{{- end }}

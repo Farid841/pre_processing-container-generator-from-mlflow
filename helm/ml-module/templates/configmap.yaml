@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ml-module.fullname" . }}        # ← appel de la fonction du helpers
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ml-module.labels" . | nindent 4 }} # ← les labels standards, indentés de 4 espaces
+data:
+  # --- Kafka connexion ---
+  KAFKA_ENABLED: "true"
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers | quote }}
+  KAFKA_SECURITY_PROTOCOL: {{ .Values.kafka.securityProtocol | quote }}
+  KAFKA_TOPIC_SUFFIX: {{ .Values.kafka.topicSuffix | quote }}
+
+  # --- Kafka topics ---
+  INPUT_TOPIC: {{ .Values.kafka.inputTopic | quote }}
+  OUTPUT_TOPIC: {{ .Values.kafka.outputTopic | quote }}
+  CONSUMER_GROUP_ID: {{ .Values.kafka.consumerGroupId | quote }}
+  AUTO_OFFSET_RESET: {{ .Values.kafka.autoOffsetReset | quote }}
+
+  # --- Format des messages ---
+  INPUT_FORMAT: {{ .Values.kafka.inputFormat | quote }}   # avro pour alertes ZTF, json pour on-demand
+  OUTPUT_FORMAT: {{ .Values.kafka.outputFormat | quote }}
+  AVRO_SCHEMA_PATH: {{ .Values.kafka.avroSchemaPath | quote }}
+  SKIP_CUTOUTS: {{ .Values.kafka.skipCutouts | quote }}   # true = ignore les images ZTF (réduction taille)
+
+  # --- Batching ---
+  BATCH_SIZE: {{ .Values.kafka.batchSize | quote }}
+  BATCH_TIMEOUT_MS: {{ .Values.kafka.batchTimeoutMs | quote }}
+
+  # --- Module ML ---
+  MODEL_NAME: {{ .Values.module.name | quote }}
+  MODEL_VERSION: {{ .Values.module.version | quote }}
+  COMPONENT_TYPE: {{ .Values.module.componentType | quote }}
+  BRIDGE_NAME: {{ include "ml-module.fullname" . | quote }}
+
+  # --- Logs ---
+  LOG_LEVEL: {{ .Values.logging.level | quote }}
+  LOG_FORMAT: {{ .Values.logging.format | quote }}
+
+  # --- API ---
+  API_PORT: {{ .Values.api.port | quote }}
+  API_HOST: {{ .Values.api.host | quote }}

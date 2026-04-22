@@ -21,6 +21,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Fix MLflow/FastAPI version incompatibility:
+# mlflow models build-docker bundles an old MLflow that uses @app.route() (Flask syntax),
+# but newer FastAPI removed that method. Upgrading MLflow here fixes the scoring server.
+RUN pip install --no-cache-dir "mlflow>=3.11.1.0"
+
 # Kafka bridge Python deps
 RUN pip install --no-cache-dir \
     confluent-kafka>=2.3.0 \

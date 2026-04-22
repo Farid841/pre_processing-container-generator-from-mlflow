@@ -1,0 +1,16 @@
+image:
+  repository: ghcr.io/farid841/pre_processing-container-generator-from-mlflow/preprocessing-ztf-real-bogus
+  tag: v55257832-55257832
+  pullPolicy: IfNotPresent
+
+module:
+  name: ztf-real-bogus
+  version: v55257832
+  componentType: preprocessing
+  mode: streaming
+
+kafka:
+  bootstrapServers: "172.18.90.239:29092"
+  inputTopic: fink_alerts
+  outputTopic: fink-ztf-real-bogus-preprocessed
+  consumerGroupId: ztf-real-bogus-preprocessing-streaming
