@@ -115,15 +115,23 @@ class KafkaProcessor:
 
         for data, message in batch:
             try:
-                # Call preprocessing function directly
-                result = self.pre_processing_func(data)
+                # Call preprocessing function with just the alert data
+                features = self.pre_processing_func(data)
 
                 # Extract key for output message
                 key = self._extract_key(data)
 
+                # Wrap features with alert metadata so downstream consumers
+                # (model bridge) can identify which alert was processed
+                envelope = {
+                    "objectId": data.get("objectId"),
+                    "candid": data.get("candid"),
+                    "features": features,
+                }
+
                 # Produce to output topic
-                self.producer.produce(result, key=key)
-                results.append(result)
+                self.producer.produce(envelope, key=key)
+                results.append(envelope)
                 messages_to_commit.append(message)
 
             except Exception as e:

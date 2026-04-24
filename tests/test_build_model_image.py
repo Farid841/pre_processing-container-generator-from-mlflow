@@ -24,7 +24,7 @@ from build_scripts import build_model_image  # noqa: E402
 from build_scripts.utils import sanitize_docker_name  # noqa: E402
 
 
-class TestSanitize:
+class TestSanitizeDockerName:
     """Tests for sanitize_docker_name helper."""
 
     def test_lowercase(self):
@@ -153,8 +153,8 @@ class TestBuildWrapperImage:
             )
 
 
-class TestStreamRun:
-    """Tests for the stream_run helper (imported as _stream_run)."""
+class TestStreamSubprocessOutput:
+    """Tests for the _stream_run helper (streams subprocess stdout line by line)."""
 
     @patch("subprocess.Popen")
     def test_streams_output(self, mock_popen):
@@ -180,8 +180,8 @@ class TestStreamRun:
             build_model_image._stream_run(["false"])
 
 
-class TestMain:
-    """Integration-style tests for the main() entry point."""
+class TestBuildModelImageCLI:
+    """Integration-style tests for the build_model_image CLI entry point."""
 
     @patch("build_scripts.build_model_image.build_wrapper_image")
     @patch("build_scripts.build_model_image.build_mlflow_base_image")

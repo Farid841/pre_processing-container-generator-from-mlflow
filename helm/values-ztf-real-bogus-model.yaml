@@ -10,10 +10,11 @@ module:
   mode: streaming
 
 kafka:
-  bootstrapServers: "172.18.90.239:29092"
+  bootstrapServers: "10.42.0.1:29092"
   inputTopic: fink-ztf-real-bogus-preprocessed
   outputTopic: fink-ztf-real-bogus-results
   consumerGroupId: ztf-real-bogus-model-streaming
+  inputFormat: "json"   # preprocessing outputs JSON, not AVRO
 
 # MLflow scoring server runs on 8080 with /ping (not 8000 with /health)
 api:

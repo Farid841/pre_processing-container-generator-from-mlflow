@@ -38,6 +38,7 @@ jobs:
 
     outputs:
       preprocessing_image: ${{ steps.image-names.outputs.preprocessing_image }}
+      model_image:         ${{ steps.image-names.outputs.model_image }}
       image_tag:           ${{ steps.image-names.outputs.image_tag }}
 
     env:
@@ -114,7 +115,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push images
+      - name: Build and push preprocessing image (+ model image if MODEL_SOURCE set)
         env:
           RUN_ID:       ${{ steps.params.outputs.run_id }}
           MODEL_SOURCE: ${{ steps.params.outputs.model_source }}
@@ -133,7 +134,8 @@ jobs:
       - name: Compute image names
         id: image-names
         env:
-          RUN_ID: ${{ steps.params.outputs.run_id }}
+          RUN_ID:       ${{ steps.params.outputs.run_id }}
+          MODEL_SOURCE: ${{ steps.params.outputs.model_source }}
         run: |
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
 
@@ -141,6 +143,7 @@ jobs:
           import mlflow, os, re, sys
 
           run_id = os.environ["RUN_ID"]
+          model_source = os.environ.get("MODEL_SOURCE", "")
           mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", ""))
 
           try:
@@ -156,16 +159,21 @@ jobs:
               name, ver = "unknown", run_id[:8]
 
           clean = lambda s: re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")
-          # image name has no version — version lives in the tag
-          print(f"preprocessing-{clean(name)}|v{clean(ver)}")
+          # model_image is only set when MODEL_SOURCE was provided (model build was requested)
+          model_name = f"model-{clean(name)}" if model_source else ""
+          print(f"preprocessing-{clean(name)}|{model_name}|v{clean(ver)}")
           EOF
           )
 
-          IMAGE_NAME=$(echo "$IMAGE_INFO" | cut -d'|' -f1)
-          VERSION_TAG=$(echo "$IMAGE_INFO" | cut -d'|' -f2)
+          PREPROCESSING_NAME=$(echo "$IMAGE_INFO" | cut -d'|' -f1)
+          MODEL_NAME=$(echo "$IMAGE_INFO" | cut -d'|' -f2)
+          VERSION_TAG=$(echo "$IMAGE_INFO" | cut -d'|' -f3)
 
-          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${IMAGE_NAME}:latest"        >> $GITHUB_OUTPUT
-          echo "image_tag=${VERSION_TAG}"                                                >> $GITHUB_OUTPUT
+          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${PREPROCESSING_NAME}:latest" >> $GITHUB_OUTPUT
+          echo "image_tag=${VERSION_TAG}"                                               >> $GITHUB_OUTPUT
+          if [ -n "$MODEL_NAME" ]; then
+            echo "model_image=ghcr.io/${REPO_LOWER}/${MODEL_NAME}:latest"               >> $GITHUB_OUTPUT
+          fi
 
   smoke-tests:
     name: Smoke Tests (Preprocessing Container)
@@ -206,7 +214,7 @@ jobs:
           docker logs preprocessing-smoke
           exit 1
 
-      - name: Smoke test — /health
+      - name: Smoke test - /health
         run: |
           RESP=$(curl -sf http://localhost:8000/health)
           echo "Response: $RESP"
@@ -217,7 +225,7 @@ jobs:
           print('PASS /health')
           "
 
-      - name: Smoke test — /preprocess returns N_FEATURES floats
+      - name: Smoke test - /preprocess returns N_FEATURES floats
         run: |
           # Send a realistic ZTF AVRO alert and verify the output shape
           RESP=$(curl -sf -X POST http://localhost:8000/preprocess \
@@ -251,10 +259,10 @@ jobs:
           assert isinstance(features, list), f'Expected a list of features, got: {type(features)}'
           assert len(features) == 18, f'Expected 18 features (N_FEATURES), got {len(features)}: {features}'
           assert all(isinstance(v, (int, float)) for v in features), f'All features must be numeric, got: {features}'
-          print(f'PASS /preprocess — {len(features)} features returned')
+          print(f'PASS /preprocess - {len(features)} features returned')
           "
 
-      - name: Smoke test — /preprocess/batch
+      - name: Smoke test - /preprocess/batch
         run: |
           RESP=$(curl -sf -X POST http://localhost:8000/preprocess/batch \
             -H "Content-Type: application/json" \
@@ -277,7 +285,7 @@ jobs:
           results = d.get('features') or d.get('result') or d.get('results') or d.get('data') or d
           assert isinstance(results, list), f'Expected a list, got: {type(results)}'
           assert len(results) == 2, f'Expected 2 results for 2 alerts, got {len(results)}'
-          print(f'PASS /preprocess/batch — {len(results)} results returned')
+          print(f'PASS /preprocess/batch - {len(results)} results returned')
           "
 
       - name: Show logs on failure
@@ -289,3 +297,84 @@ jobs:
         run: |
           docker stop preprocessing-smoke 2>/dev/null || true
           docker rm   preprocessing-smoke 2>/dev/null || true
+
+  smoke-tests-model:
+    name: Smoke Tests (Model Container)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    # Only runs when a model image was built (MODEL_SOURCE was provided)
+    if: ${{ needs.build-and-push.outputs.model_image != '' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull model image
+        run: docker pull "${{ needs.build-and-push.outputs.model_image }}"
+
+      - name: Start model container (API only, no Kafka)
+        run: |
+          docker run -d \
+            --name model-smoke \
+            -p 8080:8080 \
+            -e KAFKA_ENABLED=false \
+            "${{ needs.build-and-push.outputs.model_image }}"
+
+      - name: Wait for MLflow /ping
+        run: |
+          echo "Waiting for MLflow scoring server..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/ping > /dev/null; then
+              echo "Model server ready (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/60..."
+            sleep 5
+          done
+          echo "Model server did not start within 300s"
+          docker logs model-smoke
+          exit 1
+
+      - name: Smoke test - /ping
+        run: |
+          RESP=$(curl -sf http://localhost:8080/ping)
+          echo "Response: $RESP"
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d.get('status') == 'alive', f'Expected status=alive, got: {d}'
+          print('PASS /ping')
+          "
+
+      - name: Smoke test - /invocations (18 features)
+        run: |
+          # Send 18 preprocessed features (output shape of preprocessing container)
+          RESP=$(curl -sf -X POST http://localhost:8080/invocations \
+            -H "Content-Type: application/json" \
+            -d '{
+              "inputs": [[0.92, 0.87, 0.1, 2.4, 1.02, 19.3, 0.04, 20.8, 3, 12.1,
+                          0.98, 0.01, 0.7, 0.3, 1.0, 0.0, 19.1, 19.4]]
+            }')
+          echo "Response: $RESP"
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          predictions = d.get('predictions') or d.get('outputs') or d
+          assert predictions is not None, f'No predictions in response: {d}'
+          print(f'PASS /invocations - prediction: {predictions}')
+          "
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs model-smoke
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop model-smoke 2>/dev/null || true
+          docker rm   model-smoke 2>/dev/null || true

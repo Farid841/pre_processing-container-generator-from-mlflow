@@ -237,6 +237,15 @@ class APIClient:
         """
         if "model_input" in record:
             return record["model_input"]
+        if "features" in record:
+            features = record["features"]
+            if isinstance(features, list):
+                return features
+            self.logger.warning(
+                "Invalid features format in record, skipping",
+                features_type=type(features).__name__,
+            )
+            return None
         if "result" in record:
             result = record["result"]
             if isinstance(result, list):

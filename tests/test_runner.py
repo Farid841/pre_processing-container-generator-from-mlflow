@@ -175,8 +175,8 @@ class TestReadJson:
         assert results[0] == {"key": "value"}
 
 
-class TestMain:
-    """Tests for main function."""
+class TestRunnerCLI:
+    """Tests for the runner CLI entry point (main function)."""
 
     @patch("runner.runner.load_preprocessing")
     @patch("runner.runner.is_avro_file")

@@ -1,4 +1,4 @@
-name: Unit Tests (reusable)
+name: Unit Tests - kafka_bridge / runner / build_scripts (reusable)
 
 on:
   workflow_call:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   unit-tests:
-    name: Unit Tests
+    name: Unit Tests - kafka_bridge / runner / build_scripts
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -33,7 +33,7 @@ jobs:
       - name: Install test dependencies
         run: pdm install -dG test
 
-      - name: Run unit tests
+      - name: Run unit tests (kafka_bridge, runner, build_scripts)
         run: pdm run test
 
       - name: Upload coverage report

@@ -10,7 +10,7 @@ module:
   mode: streaming
 
 kafka:
-  bootstrapServers: "172.18.90.239:29092"
+  bootstrapServers: "10.42.0.1:29092"
   inputTopic: fink_alerts
   outputTopic: fink-ztf-real-bogus-preprocessed
   consumerGroupId: ztf-real-bogus-preprocessing-streaming

@@ -75,7 +75,13 @@ class KafkaConsumerWrapper:
 
         if msg.error():
             if msg.error().code() == KafkaError._PARTITION_EOF:
-                # End of partition, not an error
+                return None
+            if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                # Topic doesn't exist yet — wait for auto-creation or producer
+                self.logger.warning(
+                    "Topic not available yet, retrying...", topic=self.config.input_topic
+                )
+                time.sleep(2)
                 return None
             raise KafkaException(msg.error())
 
