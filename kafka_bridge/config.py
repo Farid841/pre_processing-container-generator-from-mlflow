@@ -78,6 +78,10 @@ class BridgeConfig:
     batch_timeout_ms: int = field(
         default_factory=lambda: int(os.getenv("BATCH_TIMEOUT_MS", "1000"))
     )
+    # Batch mode: stop after this many seconds with no messages (0 = disabled, run forever)
+    idle_timeout_seconds: int = field(
+        default_factory=lambda: int(os.getenv("IDLE_TIMEOUT_SECONDS", "0"))
+    )
 
     # Logging settings
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))

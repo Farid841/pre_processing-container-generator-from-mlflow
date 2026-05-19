@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Preprocessing code is located in /app/preprocessing/
+# Preprocessing code is located in /app/preprocessing/ in the container
 PREPROCESSING_PATH = Path("/app/preprocessing/preprocessing.py")
 
 
@@ -194,7 +194,6 @@ def is_avro_file(file_path_or_stdin):
         if str(file_path_or_stdin).endswith(".avro"):
             return True
 
-        # Check magic number (first bytes)
         try:
             with open(file_path_or_stdin, "rb") as f:
                 header = f.read(4)
@@ -376,7 +375,6 @@ def send_to_kafka_or_stdout(producer, topic_name: str, data: dict):
         try:
             # Send to Kafka (async)
             producer.produce(topic_name, value=json_str.encode("utf-8"), callback=delivery_callback)
-            # Poll to trigger delivery callbacks
             producer.poll(0)
             logger.info(f"📤 Produced message to Kafka topic '{topic_name}'")
         except Exception as e:

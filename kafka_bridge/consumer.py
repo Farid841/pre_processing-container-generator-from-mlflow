@@ -174,7 +174,10 @@ class KafkaConsumerWrapper:
         batch_size: Optional[int] = None,
         timeout_ms: Optional[int] = None,
     ) -> Iterator[List[Tuple[Any, Message]]]:
-        """Iterate over batches of messages indefinitely.
+        """Iterate over batches of messages.
+
+        Stops when self._running is False or when IDLE_TIMEOUT_SECONDS is set
+        and no messages have been received for that many seconds (batch mode).
 
         Args:
             batch_size: Maximum messages per batch
@@ -185,11 +188,20 @@ class KafkaConsumerWrapper:
             data can be dict or list (for JSON arrays)
         """
         self._running = True
+        idle_timeout = self.config.idle_timeout_seconds
+        last_message_time = time.time()
 
         while self._running:
             batch = self.consume_batch(batch_size, timeout_ms)
             if batch:
+                last_message_time = time.time()
                 yield batch
+            elif idle_timeout > 0 and (time.time() - last_message_time) >= idle_timeout:
+                self.logger.info(
+                    "Idle timeout reached, stopping consumer",
+                    idle_timeout_seconds=idle_timeout,
+                )
+                break
 
     def stop(self) -> None:
         """Signal the consumer to stop iterating."""
