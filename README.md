@@ -646,3 +646,37 @@ Le script crée automatiquement :
 - Un modèle scikit-learn entraîné avec métriques
 
 Le `run_id` sera affiché à la fin pour tester le build.
+
+
+
+
+ce qu'il faut savoire. k,k,
+
+
+
+
+for i in $(seq 1 20);
+do
+    python rootfs/fink/bin/simulate_stream \
+      -servers localhost:29092 \
+      -topic fink_alerts \
+      -datasimpath datasim \
+      -nobservations 1 \
+      -nalerts_per_obs 1321 \
+      -tinterval_kafka 0 \
+      -npartitions 1 &
+  done
+
+
+
+
+
+
+
+
+ conf = {'bootstrap.servers': 'pkc-abcd85.us-west-2.aws.confluent.cloud:9092',
+        'security.protocol': 'SASL_SSL',
+        'sasl.mechanism': 'PLAIN',
+        'sasl.username': '<CLUSTER_API_KEY>',
+        'sasl.password': '<CLUSTER_API_SECRET>',
+        'client.id': socket.gethostname()}
