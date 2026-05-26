@@ -97,22 +97,31 @@ class BridgeConfig:
     # Bridge identification
     bridge_name: str = field(default_factory=lambda: os.getenv("BRIDGE_NAME", "kafka-bridge"))
 
+    def _is_plaintext(self) -> bool:
+        return self.kafka_security_protocol.upper() == "PLAINTEXT"
+
+    def _is_sasl_protocol(self) -> bool:
+        return self.kafka_security_protocol.upper() not in ("PLAINTEXT", "SSL")
+
     def get_kafka_consumer_config(self) -> dict:
         """Get Kafka consumer configuration dictionary."""
         config = {
             "bootstrap.servers": self.kafka_bootstrap_servers,
             "group.id": self.consumer_group_id,
             "auto.offset.reset": self.auto_offset_reset,
-            "enable.auto.commit": False,  # Manual commit for reliability
-            "security.protocol": self.kafka_security_protocol,
+            "enable.auto.commit": False,
         }
 
-        if self.kafka_sasl_mechanism:
-            config["sasl.mechanism"] = self.kafka_sasl_mechanism
-        if self.kafka_sasl_username:
-            config["sasl.username"] = self.kafka_sasl_username
-        if self.kafka_sasl_password:
-            config["sasl.password"] = self.kafka_sasl_password
+        if not self._is_plaintext():
+            config["security.protocol"] = self.kafka_security_protocol
+
+        if self._is_sasl_protocol():
+            if self.kafka_sasl_mechanism:
+                config["sasl.mechanism"] = self.kafka_sasl_mechanism
+            if self.kafka_sasl_username:
+                config["sasl.username"] = self.kafka_sasl_username
+            if self.kafka_sasl_password:
+                config["sasl.password"] = self.kafka_sasl_password
 
         return config
 
@@ -120,16 +129,18 @@ class BridgeConfig:
         """Get Kafka producer configuration dictionary."""
         config = {
             "bootstrap.servers": self.kafka_bootstrap_servers,
-            "security.protocol": self.kafka_security_protocol,
-            "acks": "all",  # Wait for all replicas
         }
 
-        if self.kafka_sasl_mechanism:
-            config["sasl.mechanism"] = self.kafka_sasl_mechanism
-        if self.kafka_sasl_username:
-            config["sasl.username"] = self.kafka_sasl_username
-        if self.kafka_sasl_password:
-            config["sasl.password"] = self.kafka_sasl_password
+        if not self._is_plaintext():
+            config["security.protocol"] = self.kafka_security_protocol
+
+        if self._is_sasl_protocol():
+            if self.kafka_sasl_mechanism:
+                config["sasl.mechanism"] = self.kafka_sasl_mechanism
+            if self.kafka_sasl_username:
+                config["sasl.username"] = self.kafka_sasl_username
+            if self.kafka_sasl_password:
+                config["sasl.password"] = self.kafka_sasl_password
 
         return config
 

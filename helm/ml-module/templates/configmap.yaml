@@ -9,8 +9,15 @@ data:
   # --- Kafka connexion ---
   KAFKA_ENABLED: "true"
   KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers | quote }}
-  KAFKA_SECURITY_PROTOCOL: {{ .Values.kafka.securityProtocol | quote }}
   KAFKA_TOPIC_SUFFIX: {{ .Values.kafka.topicSuffix | quote }}
+  {{- if ne .Values.kafka.securityProtocol "PLAINTEXT" }}
+  KAFKA_SECURITY_PROTOCOL: {{ .Values.kafka.securityProtocol | quote }}
+  {{- end }}
+  {{- if or (eq .Values.kafka.securityProtocol "SASL_PLAINTEXT") (eq .Values.kafka.securityProtocol "SASL_SSL") }}
+  KAFKA_SASL_MECHANISM: {{ .Values.kafka.sasl.mechanism | quote }}
+  KAFKA_SASL_USERNAME: {{ .Values.kafka.sasl.username | quote }}
+  KAFKA_SASL_PASSWORD: {{ .Values.kafka.sasl.password | quote }}
+  {{- end }}
 
   # --- Kafka topics ---
   INPUT_TOPIC: {{ .Values.kafka.inputTopic | quote }}

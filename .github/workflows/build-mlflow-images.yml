@@ -171,10 +171,14 @@ jobs:
           MODEL_NAME=$(echo "$IMAGE_INFO" | cut -d'|' -f2)
           VERSION_TAG=$(echo "$IMAGE_INFO" | cut -d'|' -f3)
 
-          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${PREPROCESSING_NAME}:latest" >> $GITHUB_OUTPUT
-          echo "image_tag=${VERSION_TAG}"                                               >> $GITHUB_OUTPUT
+          # Immutable tag: v{version}-{run_id[:8]}  mirrors what build.sh pushes
+          RUN_ID_SHORT="${RUN_ID:0:8}"
+          IMMUTABLE_TAG="${VERSION_TAG}-${RUN_ID_SHORT}"
+
+          echo "preprocessing_image=ghcr.io/${REPO_LOWER}/${PREPROCESSING_NAME}:${IMMUTABLE_TAG}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMMUTABLE_TAG}"                                                        >> $GITHUB_OUTPUT
           if [ -n "$MODEL_NAME" ]; then
-            echo "model_image=ghcr.io/${REPO_LOWER}/${MODEL_NAME}:latest"               >> $GITHUB_OUTPUT
+            echo "model_image=ghcr.io/${REPO_LOWER}/${MODEL_NAME}:${IMMUTABLE_TAG}"               >> $GITHUB_OUTPUT
           fi
 
   smoke-tests:

@@ -17,7 +17,13 @@ kafka:
   outputTopic: ""             # obligatoire : topic destination
   consumerGroupId: ""         # obligatoire : unique par install helm
   topicSuffix: "cleaned"
+
+  # PLAINTEXT     → aucune sécurité (défaut, config minimale)
+  # SSL           → TLS uniquement, sans authentification
+  # SASL_PLAINTEXT → authentification SASL sans TLS
+  # SASL_SSL      → authentification SASL + TLS
   securityProtocol: PLAINTEXT
+
   autoOffsetReset: "latest"   # latest = commence aux nouveaux messages (streaming)
                               # earliest = rejoue depuis le début (debug/replay)
 
@@ -28,13 +34,12 @@ kafka:
   skipCutouts: "true"         # ignore les images dans les alertes ZTF (réduit la taille)
 
   # Batching
-  batchSize: "1000"            # nb de messages traités ensemble
+  batchSize: "1000"           # nb de messages traités ensemble
   batchTimeoutMs: "1000"      # temps max d'attente pour remplir un batch (ms)
 
-  # Credentials SASL (uniquement si securityProtocol: SASL_PLAINTEXT ou SASL_SSL)
+  # Credentials SASL — ignoré si securityProtocol est PLAINTEXT ou SSL
   sasl:
-    enabled: false
-    mechanism: PLAIN
+    mechanism: PLAIN          # PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
     username: ""
     password: ""
 
