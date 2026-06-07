@@ -22,6 +22,7 @@ from kafka_bridge.config import BridgeConfig
 from kafka_bridge.consumer import KafkaConsumerWrapper
 from kafka_bridge.logger import BridgeLogger
 from kafka_bridge.producer import KafkaProducerWrapper
+from kafka_bridge.schema_fetcher import fetch_schema_from_topic
 from kafka_bridge.serializers import MessageSerializer
 from kafka_bridge.signals import setup_signal_handlers
 from runner.runner import load_preprocessing
@@ -47,11 +48,29 @@ class KafkaProcessor:
 
         self.logger = BridgeLogger(self.config)
 
+        # If a schema topic is configured (and no local schema file), fetch the
+        # Avro schema from Kafka before the consumer/serializer are created.
+        avro_schema_dict = None
+        if (
+            self.config.input_format in ("avro", "auto")
+            and not self.config.avro_schema_path
+            and self.config.schema_topic
+        ):
+            self.logger.info(
+                "Fetching Avro schema from topic", schema_topic=self.config.schema_topic
+            )
+            avro_schema_dict = fetch_schema_from_topic(
+                schema_topic=self.config.schema_topic,
+                kafka_config=self.config.get_kafka_consumer_config(),
+            )
+            self.logger.info("Avro schema fetched successfully")
+
         # Initialize serializers
         self.input_serializer = MessageSerializer(
             input_format=self.config.input_format,
             output_format="json",  # Internal format
             avro_schema_path=self.config.avro_schema_path,
+            avro_schema_dict=avro_schema_dict,
             skip_cutouts=self.config.skip_cutouts,
             logger=self.logger,
         )
