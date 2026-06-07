@@ -76,7 +76,7 @@ def fetch_schema_from_topic(
     Parameters
     ----------
     schema_topic : str
-        Kafka topic that contains schema messages (e.g. finference_in_xxx_schema).
+        Kafka topic that contains schema messages (e.g. fink_ai_feed_xxx_schema).
     kafka_config : dict
         Confluent Kafka base config (bootstrap.servers, security settings, …).
         group.id and auto.offset.reset are overridden internally.
