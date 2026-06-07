@@ -33,6 +33,22 @@ class AvroSerializer:
         self.schema = self._load_schema(schema_path)
         self.parsed_schema = fastavro.parse_schema(self.schema)
 
+    @classmethod
+    def from_schema_dict(
+        cls, schema_dict: dict, logger: Optional[BridgeLogger] = None
+    ) -> "AvroSerializer":
+        """Create an AvroSerializer from a pre-loaded schema dict.
+
+        Args:
+            schema_dict: Avro schema as a Python dict
+            logger: Optional logger for debugging
+        """
+        obj = cls.__new__(cls)
+        obj.logger = logger
+        obj.schema = schema_dict
+        obj.parsed_schema = fastavro.parse_schema(schema_dict)
+        return obj
+
     def _load_schema(self, schema_path: str) -> dict:
         """Load Avro schema from file.
 
@@ -159,6 +175,7 @@ class MessageSerializer:
         input_format: str = "avro",
         output_format: str = "json",
         avro_schema_path: Optional[str] = None,
+        avro_schema_dict: Optional[dict] = None,
         output_avro_schema_path: Optional[str] = None,
         skip_cutouts: bool = True,
         logger: Optional[BridgeLogger] = None,
@@ -168,7 +185,8 @@ class MessageSerializer:
         Args:
             input_format: Input message format ('avro', 'json', 'auto')
             output_format: Output message format ('avro', 'json')
-            avro_schema_path: Path to input Avro schema (required for avro input)
+            avro_schema_path: Path to input Avro schema file (mutually exclusive with avro_schema_dict)
+            avro_schema_dict: Pre-loaded Avro schema dict (mutually exclusive with avro_schema_path)
             output_avro_schema_path: Path to output Avro schema (required for avro output)
             skip_cutouts: Whether to remove cutout data (large binary fields) from messages
             logger: Optional logger
@@ -182,7 +200,9 @@ class MessageSerializer:
         self.avro_deserializer: Optional[AvroSerializer] = None
         self.json_deserializer = JsonSerializer(logger)
 
-        if input_format in ("avro", "auto") and avro_schema_path:
+        if input_format in ("avro", "auto") and avro_schema_dict:
+            self.avro_deserializer = AvroSerializer.from_schema_dict(avro_schema_dict, logger)
+        elif input_format in ("avro", "auto") and avro_schema_path:
             self.avro_deserializer = AvroSerializer(avro_schema_path, logger)
 
         # Output serializers

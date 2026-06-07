@@ -52,9 +52,8 @@ class BridgeConfig:
     )
 
     # Avro schema settings
-    avro_schema_path: Optional[str] = field(
-        default_factory=lambda: os.getenv("AVRO_SCHEMA_PATH", "/app/schemas/ztf_alert_v3.3.avsc")
-    )
+    avro_schema_path: Optional[str] = field(default_factory=lambda: os.getenv("AVRO_SCHEMA_PATH"))
+    schema_topic: Optional[str] = field(default_factory=lambda: os.getenv("SCHEMA_TOPIC"))
     output_avro_schema_path: Optional[str] = field(
         default_factory=lambda: os.getenv("OUTPUT_AVRO_SCHEMA_PATH")
     )
@@ -152,8 +151,10 @@ class BridgeConfig:
         if self.output_format not in ("avro", "json"):
             raise ValueError(f"Invalid output_format: {self.output_format}")
 
-        if self.input_format == "avro" and not self.avro_schema_path:
-            raise ValueError("AVRO_SCHEMA_PATH is required when INPUT_FORMAT is 'avro'")
+        if self.input_format == "avro" and not self.avro_schema_path and not self.schema_topic:
+            raise ValueError(
+                "Either AVRO_SCHEMA_PATH or SCHEMA_TOPIC is required when INPUT_FORMAT is 'avro'"
+            )
 
         if self.output_format == "avro" and not self.output_avro_schema_path:
             raise ValueError("OUTPUT_AVRO_SCHEMA_PATH is required when OUTPUT_FORMAT is 'avro'")

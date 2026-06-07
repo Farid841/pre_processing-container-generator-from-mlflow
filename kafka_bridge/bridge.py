@@ -13,6 +13,7 @@ from kafka_bridge.config import BridgeConfig
 from kafka_bridge.consumer import KafkaConsumerWrapper
 from kafka_bridge.logger import BridgeLogger
 from kafka_bridge.producer import KafkaProducerWrapper
+from kafka_bridge.schema_fetcher import fetch_schema_from_topic
 from kafka_bridge.serializers import MessageSerializer
 from kafka_bridge.signals import setup_signal_handlers
 
@@ -31,11 +32,26 @@ class KafkaBridge:
 
         self.logger = BridgeLogger(self.config)
 
+        # If SCHEMA_TOPIC is set, fetch the Avro schema from Kafka at startup
+        # instead of reading it from a file baked into the Docker image.
+        avro_schema_dict = None
+        if self.config.schema_topic:
+            self.logger.info(
+                "Fetching Avro schema from Kafka topic",
+                schema_topic=self.config.schema_topic,
+            )
+            avro_schema_dict = fetch_schema_from_topic(
+                self.config.schema_topic,
+                self.config.get_kafka_consumer_config(),
+            )
+            self.logger.info("Avro schema fetched successfully")
+
         # Initialize serializers
         self.input_serializer = MessageSerializer(
             input_format=self.config.input_format,
             output_format="json",  # Internal format for API
             avro_schema_path=self.config.avro_schema_path,
+            avro_schema_dict=avro_schema_dict,
             skip_cutouts=self.config.skip_cutouts,
             logger=self.logger,
         )
