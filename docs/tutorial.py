@@ -124,7 +124,10 @@ def _():
     from sklearn.model_selection import train_test_split
 
     FINK_API = "https://api.ztf.fink-portal.org/api/v1/latests"
-    COLS = "i:objectId,i:rb,i:drb,i:classtar,i:magpsf,i:sigmapsf,i:diffmaglim,i:ndethist"
+    COLS = (
+        "i:objectId,i:rb,i:drb,i:classtar,i:magpsf,i:sigmapsf,"
+        "i:diffmaglim,i:ndethist,i:isdiffpos,i:sgscore1,i:distpsnr1"
+    )
 
     def fetch(class_name, n):
         r = requests.post(
@@ -155,27 +158,25 @@ def _():
             return max(0.0, min(1.0, x / (x + y)))
 
         def make_alert(is_real):
-            if is_real:
-                return {
-                    "candidate": {
-                        "rb": beta(8, 2),
-                        "drb": beta(8, 2),
-                        "classtar": rng.uniform(0, 1),
-                        "magpsf": rng.gauss(19, 2),
-                        "sigmapsf": abs(rng.gauss(0.15, 0.05)),
-                        "diffmaglim": rng.gauss(20, 1),
-                        "ndethist": max(1, int(rng.gauss(8, 3))),
-                    }
-                }
             return {
                 "candidate": {
-                    "rb": beta(2, 8),
-                    "drb": beta(2, 8),
+                    "rb": beta(8, 2) if is_real else beta(2, 8),
+                    "drb": beta(8, 2) if is_real else beta(2, 8),
                     "classtar": rng.uniform(0, 1),
-                    "magpsf": rng.gauss(18.5, 3),
-                    "sigmapsf": abs(rng.gauss(0.3, 0.1)),
+                    "fwhm": abs(rng.gauss(2.2, 0.3) if is_real else rng.gauss(3.5, 0.8)),
+                    "elong": max(1.0, rng.gauss(1.05, 0.05) if is_real else rng.gauss(1.3, 0.3)),
+                    "magpsf": rng.gauss(19, 2) if is_real else rng.gauss(18.5, 3),
+                    "sigmapsf": abs(rng.gauss(0.15, 0.05) if is_real else rng.gauss(0.3, 0.1)),
                     "diffmaglim": rng.gauss(20, 1),
-                    "ndethist": max(0, int(rng.gauss(1, 1))),
+                    "ndethist": (
+                        max(1, int(rng.gauss(8, 3))) if is_real else max(0, int(rng.gauss(1, 1)))
+                    ),
+                    "scorr": rng.gauss(15.0, 3.0) if is_real else rng.gauss(5.0, 2.0),
+                    "chinr": abs(rng.gauss(1.0, 0.15)),
+                    "sharpnr": rng.gauss(0.0, 0.1),
+                    "sgscore1": rng.uniform(0.0, 0.3) if is_real else rng.uniform(0.7, 1.0),
+                    "distpsnr1": rng.uniform(0.1, 3.0),
+                    "isdiffpos": "t",
                 }
             }
 
@@ -214,23 +215,87 @@ def _(mo):
 @app.cell
 def _(alerts, labels, np, train_test_split):
     def pre_processing(alert: dict) -> list:
-        """Extrait un vecteur de features d'une alerte ZTF.
+        """Extrait 18 features d'une alerte ZTF."""
+        c = alert.get("candidate") or {}
+        prv = alert.get("prv_candidates") or []
 
-        C'est ce fichier que Fink exécute sur chaque alerte du flux réel.
-        Modifiez les features selon votre modèle.
-        """
-        c = alert["candidate"]
+        _dp = c.get("isdiffpos")
+        isdiffpos = 1.0 if _dp in ("t", "1", 1, True) else 0.0
+
+        mags, jds = [], []
+        for p in prv:
+            if not isinstance(p, dict):
+                continue
+            if p.get("isdiffpos") not in ("t", "1", 1, True):
+                continue
+            m, j = p.get("magpsf"), p.get("jd")
+            if m is not None:
+                try:
+                    mags.append(float(m))
+                except (TypeError, ValueError):
+                    pass
+            if j is not None:
+                try:
+                    jds.append(float(j))
+                except (TypeError, ValueError):
+                    pass
+        n_prev_det = float(len(mags))
+        if len(mags) >= 2:
+            _mean = sum(mags) / len(mags)
+            mag_std = (sum((_m - _mean) ** 2 for _m in mags) / len(mags)) ** 0.5
+        else:
+            mag_std = 0.0
+        time_baseline = (max(jds) - min(jds)) if len(jds) >= 2 else 0.0
+
+        def _sf(v):
+            if v is None:
+                return 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
         return [
-            float(c.get("rb", 0.0)),  # RealBogus ZTF      [0–1]
-            float(c.get("drb", 0.0)),  # Deep RealBogus CNN [0–1]
-            float(c.get("classtar", 0.5)),  # Stellarité         [0–1]
-            float(c.get("magpsf", 0.0)),  # Magnitude PSF
-            float(c.get("sigmapsf", 0.0)),  # Incertitude mag
-            float(c.get("diffmaglim", 0.0)),  # Limite de détection
-            float(c.get("ndethist", 0.0)),  # Détections passées
+            _sf(c.get("rb")),
+            _sf(c.get("drb")),
+            _sf(c.get("classtar")),
+            _sf(c.get("fwhm")),
+            _sf(c.get("elong")),
+            _sf(c.get("magpsf")),
+            _sf(c.get("sigmapsf")),
+            _sf(c.get("diffmaglim")),
+            _sf(c.get("ndethist")),
+            _sf(c.get("scorr")),
+            _sf(c.get("chinr")),
+            _sf(c.get("sharpnr")),
+            _sf(c.get("sgscore1")),
+            _sf(c.get("distpsnr1")),
+            isdiffpos,
+            n_prev_det,
+            mag_std,
+            time_baseline,
         ]
 
-    FEATURE_NAMES = ["rb", "drb", "classtar", "magpsf", "sigmapsf", "diffmaglim", "ndethist"]
+    FEATURE_NAMES = [
+        "rb",
+        "drb",
+        "classtar",
+        "fwhm",
+        "elong",
+        "magpsf",
+        "sigmapsf",
+        "diffmaglim",
+        "ndethist",
+        "scorr",
+        "chinr",
+        "sharpnr",
+        "sgscore1",
+        "distpsnr1",
+        "isdiffpos",
+        "n_prev_det",
+        "mag_std",
+        "time_baseline",
+    ]
 
     X = np.array([pre_processing(a) for a in alerts])
     y = np.array(labels)
@@ -316,12 +381,10 @@ def _(
     f1_score,
     mlflow,
     model,
-    pre_processing,
     y_test,
     y_train,
 ):
-    import inspect
-    import textwrap
+    import pathlib
 
     from sklearn.metrics import precision_score, recall_score
 
@@ -354,11 +417,12 @@ def _(
             registered_model_name="ztf-real-bogus",
         )
 
-        # Indispensable pour Fink | uploadé avec le modèle
-        code = textwrap.dedent(inspect.getsource(pre_processing))
-        with open("/tmp/preprocessing.py", "w") as _f:
-            _f.write(code)
-        mlflow.log_artifact("/tmp/preprocessing.py", artifact_path="preprocessing")
+        # Preprocessing de production (18 features) — requis par Fink
+        _prep = pathlib.Path("training/preprocessing.py")
+        mlflow.log_artifact(str(_prep), artifact_path="preprocessing")
+        _req = pathlib.Path("training/requirements.txt")
+        if _req.exists():
+            mlflow.log_artifact(str(_req), artifact_path="preprocessing")
         mlflow.set_tag("type", "real-bogus")
     return model_info, run
 
