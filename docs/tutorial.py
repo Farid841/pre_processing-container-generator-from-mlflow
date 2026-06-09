@@ -321,17 +321,15 @@ def _(FEATURE_NAMES, X, mo, pd):
 def _(mo):
     mo.md(
         """
-    ## Étape 4: Entraîner avec MLflow autologging
+    ## Étape 4: Entraîner le classifieur
     """
     )
     return
 
 
 @app.cell
-def _(X_train, mlflow, y_train):
+def _(X_train, y_train):
     from sklearn.ensemble import RandomForestClassifier
-
-    mlflow.sklearn.autolog()
 
     model = RandomForestClassifier(
         n_estimators=100,
@@ -364,9 +362,9 @@ def _(mo):
         r"""
     ## Étape 5: Logger le modèle et `preprocessing.py`
 
-    L'autologging enregistre le modèle, mais pas votre `preprocessing.py`.
-    Ce fichier est **indispensable** : Fink l'exécute sur chaque alerte avant
-    d'appeler le modèle. Uploadez-le dans le même run.
+    Un `with mlflow.start_run()` délimite le run. On logue les paramètres,
+    les métriques, le modèle et `preprocessing.py` (le fichier qu'exécute
+    Fink sur chaque alerte) dans le même bloc.
     """
     )
     return
@@ -376,19 +374,15 @@ def _(mo):
 def _(
     FEATURE_NAMES,
     X_test,
-    X_train,
     accuracy_score,
     f1_score,
     mlflow,
     model,
     y_test,
-    y_train,
 ):
     import pathlib
 
     from sklearn.metrics import precision_score, recall_score
-
-    mlflow.sklearn.autolog(disable=True)
 
     with mlflow.start_run(run_name="ztf-real-bogus") as run:
         mlflow.log_params(
@@ -399,7 +393,6 @@ def _(
             }
         )
 
-        model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
 
         mlflow.log_metrics(
