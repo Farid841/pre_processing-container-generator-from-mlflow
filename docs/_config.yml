@@ -10,6 +10,10 @@ repository:
 execute:
   execute_notebooks: "off"
 
+launch_buttons:
+  thebe: true
+  binderhub_url: "https://mybinder.org"
+
 html:
   use_issues_button: true
   use_repository_button: true
