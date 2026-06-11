@@ -1,0 +1,16 @@
+title: MLflow x Fink Quickstart
+author: Farid
+logo: ""
+
+repository:
+  url: https://github.com/Farid841/pre_processing-container-generator-from-mlflow
+  branch: main
+  path_to_book: docs
+
+execute:
+  execute_notebooks: "off"
+
+html:
+  use_issues_button: true
+  use_repository_button: true
+  use_edit_page_button: false

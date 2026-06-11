@@ -371,15 +371,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    FEATURE_NAMES,
-    X_test,
-    accuracy_score,
-    f1_score,
-    mlflow,
-    model,
-    y_test,
-):
+def _(FEATURE_NAMES, X_test, accuracy_score, f1_score, mlflow, model, y_test):
     import pathlib
 
     from sklearn.metrics import precision_score, recall_score
