@@ -376,27 +376,38 @@ def build_docker_image(
 
     # 3. Download requirements.txt if it exists
     requirements_installed = False
-    try:
-        import mlflow
 
-        # Configure MLflow tracking URI with authentication
-        _configure_mlflow_tracking_uri()
-
-        requirements_file = mlflow.artifacts.download_artifacts(
-            run_id=run_id, artifact_path="requirements.txt"
-        )
-        requirements_path = Path(requirements_file)
-
-        # If it's a directory, look for requirements.txt inside
-        if requirements_path.is_dir():
-            requirements_path = requirements_path / "requirements.txt"
-
-        if requirements_path.exists():
-            shutil.copy(requirements_path, preprocessing_temp_dir / "requirements.txt")
-            logger.info("Found and copied requirements.txt")
+    # First check inside the preprocessing directory (e.g. logged via artifact_path="preprocessing")
+    if preprocessing_dir:
+        req_in_dir = preprocessing_dir / "requirements.txt"
+        if req_in_dir.exists():
+            shutil.copy(req_in_dir, preprocessing_temp_dir / "requirements.txt")
+            logger.info("Found requirements.txt in preprocessing directory")
             requirements_installed = True
-    except Exception as e:
-        logger.warning(f"No requirements.txt found: {e}")
+
+    # Fall back to root-level artifact
+    if not requirements_installed:
+        try:
+            import mlflow
+
+            # Configure MLflow tracking URI with authentication
+            _configure_mlflow_tracking_uri()
+
+            requirements_file = mlflow.artifacts.download_artifacts(
+                run_id=run_id, artifact_path="requirements.txt"
+            )
+            requirements_path = Path(requirements_file)
+
+            # If it's a directory, look for requirements.txt inside
+            if requirements_path.is_dir():
+                requirements_path = requirements_path / "requirements.txt"
+
+            if requirements_path.exists():
+                shutil.copy(requirements_path, preprocessing_temp_dir / "requirements.txt")
+                logger.info("Found and copied requirements.txt from root artifact")
+                requirements_installed = True
+        except Exception as e:
+            logger.warning(f"No requirements.txt found: {e}")
 
     # 4. Create a temporary Dockerfile
     # The base Dockerfile stays in docker/ and uses the source directory as context
