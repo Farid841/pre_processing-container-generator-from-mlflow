@@ -108,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             PUSH_TO_REGISTRY=true
             shift
             ;;
+        --skip-base-build)
+            SKIP_BASE_BUILD=true
+            shift
+            ;;
         --*)
             # Unknown option starting with --, pass to build_image.py
             break
@@ -325,11 +329,17 @@ if [ -n "$MODEL_SOURCE" ]; then
     for tag in "${TAGS[@]}"; do
         MODEL_TAG_ARGS+=(--tag "$tag")
     done
+    MODEL_EXTRA_ARGS=()
+    if [ "$SKIP_BASE_BUILD" = "true" ]; then
+        MODEL_EXTRA_ARGS+=(--skip-base-build)
+        echo -e "${YELLOW}⚡ Skipping mlflow base build (using cached image)${NC}"
+    fi
     pdm run python -m build_scripts.build_model_image \
         "$MODEL_URI" \
         "$MODEL_NAME" \
         "$MODEL_VERSION" \
-        "${MODEL_TAG_ARGS[@]}"
+        "${MODEL_TAG_ARGS[@]}" \
+        "${MODEL_EXTRA_ARGS[@]}"
 
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Model build failed${NC}"

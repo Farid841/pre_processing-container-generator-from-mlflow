@@ -39,6 +39,7 @@ Usage examples
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -116,8 +117,27 @@ def build_wrapper_image(
         raise FileNotFoundError(f"Dockerfile not found: {dockerfile_path}")
 
     primary = f"{final_image_name}:{image_tags[0]}"
-    _stream_run(
-        [
+    in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+    if in_ci:
+        build_cmd = [
+            "docker",
+            "buildx",
+            "build",
+            "--cache-from",
+            "type=gha",
+            "--cache-to",
+            "type=gha,mode=max",
+            "--load",
+            "-t",
+            primary,
+            "-f",
+            dockerfile_path,
+            "--build-arg",
+            f"BASE_IMAGE={base_image}",
+            build_context,
+        ]
+    else:
+        build_cmd = [
             "docker",
             "build",
             "-t",
@@ -128,7 +148,7 @@ def build_wrapper_image(
             f"BASE_IMAGE={base_image}",
             build_context,
         ]
-    )
+    _stream_run(build_cmd)
     logger.info("Wrapper image built: %s", primary)
 
     all_images = [primary]
