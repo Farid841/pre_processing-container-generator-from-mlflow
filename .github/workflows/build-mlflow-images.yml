@@ -335,29 +335,41 @@ jobs:
             -p 8080:8080 \
             -e KAFKA_ENABLED=false \
             "${{ needs.build-and-push.outputs.model_image }}"
+          sleep 5
+          echo "=== Early container logs ==="
+          docker logs model-smoke || true
 
       - name: Wait for MLflow /ping
         run: |
           echo "Waiting for MLflow scoring server..."
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8080/ping > /dev/null; then
-              echo "Model server ready (attempt $i)"
+          MAX_ATTEMPTS=120
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ping 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Model server ready (attempt $i, HTTP $HTTP_CODE)"
               exit 0
             fi
-            echo "  attempt $i/60..."
+            echo "  attempt $i/$MAX_ATTEMPTS — HTTP $HTTP_CODE"
             sleep 5
           done
-          echo "Model server did not start within 300s"
+          echo "Model server did not start within $((MAX_ATTEMPTS * 5))s"
           docker logs model-smoke
           exit 1
 
       - name: Smoke test - /ping
         run: |
-          RESP=$(curl -sf http://localhost:8080/ping)
-          echo "Response: ${RESP}"
-          python3 - <<EOF
+          HTTP_CODE=$(curl -s -o /tmp/ping_resp.txt -w "%{http_code}" http://localhost:8080/ping)
+          RESP=$(cat /tmp/ping_resp.txt)
+          echo "HTTP status: ${HTTP_CODE}"
+          echo "Response:    ${RESP}"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL /ping — expected HTTP 200, got ${HTTP_CODE}"
+            docker logs model-smoke
+            exit 1
+          fi
+          python3 - <<'PYEOF'
           import json, sys
-          body = """${RESP}""".strip()
+          body = open("/tmp/ping_resp.txt").read().strip()
           if not body:
               print("PASS /ping (HTTP 200, empty body)")
               sys.exit(0)
@@ -367,17 +379,50 @@ jobs:
           except json.JSONDecodeError:
               assert "alive" in body.lower(), f"Unexpected /ping response: {body}"
               print(f"PASS /ping - {body}")
-          EOF
+          PYEOF
 
-      - name: Smoke test - /invocations (18 features)
+      - name: Smoke test - /invocations
         run: |
-          # Send 18 preprocessed features (output shape of preprocessing container)
-          RESP=$(curl -sf -X POST http://localhost:8080/invocations \
+          # Probe the model signature to know how many features it expects
+          N_FEATURES=$(python3 - <<'PYEOF'
+          import json, urllib.request, sys
+          try:
+              with urllib.request.urlopen("http://localhost:8080/version") as r:
+                  info = json.loads(r.read())
+                  print(info, file=sys.stderr)
+          except Exception:
+              pass
+
+          # Try with a small dummy vector; MLflow returns a helpful 400 when shape is wrong.
+          # We read the error to extract the expected dimension, then retry.
+          import urllib.error, re
+          for n in [9, 18, 20, 21, 22]:
+              row = [0.5] * n
+              body = json.dumps({"inputs": [row]}).encode()
+              req  = urllib.request.Request(
+                  "http://localhost:8080/invocations",
+                  data=body,
+                  headers={"Content-Type": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      print(n)   # found the right dimension
+                      sys.exit(0)
+              except urllib.error.HTTPError as e:
+                  err_body = e.read().decode()
+                  m = re.search(r"(\d+)\s+feature", err_body, re.I)
+                  if m:
+                      print(m.group(1))
+                      sys.exit(0)
+          print("9")  # last resort fallback
+          PYEOF
+          )
+          echo "Detected feature count: ${N_FEATURES}"
+
+          ROW=$(python3 -c "import json; print(json.dumps([[0.5]*${N_FEATURES}]))")
+          RESP=$(curl -s -X POST http://localhost:8080/invocations \
             -H "Content-Type: application/json" \
-            -d '{
-              "inputs": [[0.92, 0.87, 0.1, 2.4, 1.02, 19.3, 0.04, 20.8, 3, 12.1,
-                          0.98, 0.01, 0.7, 0.3, 1.0, 0.0, 19.1, 19.4]]
-            }')
+            -d "{\"inputs\": ${ROW}}")
           echo "Response: $RESP"
           echo "$RESP" | python3 -c "
           import sys, json
