@@ -85,8 +85,9 @@ class TestBuildWrapperImage:
     """Tests for build_wrapper_image."""
 
     @patch("build_scripts.build_model_image._stream_run")
+    @patch.dict("os.environ", {"GITHUB_ACTIONS": ""}, clear=False)
     def test_calls_docker_build_with_build_arg(self, mock_stream, tmp_path):
-        """Call docker build with --build-arg BASE_IMAGE."""
+        """Call docker build with --build-arg BASE_IMAGE (outside CI)."""
         dockerfile = tmp_path / "Dockerfile.model"
         dockerfile.write_text("ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n")
 
@@ -112,6 +113,28 @@ class TestBuildWrapperImage:
             ]
         )
         assert result == ["model-foo:latest"]
+
+    @patch("build_scripts.build_model_image._stream_run")
+    @patch.dict("os.environ", {"GITHUB_ACTIONS": "true"}, clear=False)
+    def test_calls_docker_buildx_in_ci(self, mock_stream, tmp_path):
+        """In CI (GITHUB_ACTIONS=true), use buildx with GHA cache."""
+        dockerfile = tmp_path / "Dockerfile.model"
+        dockerfile.write_text("ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n")
+
+        build_model_image.build_wrapper_image(
+            base_image="model-foo-3-base:latest",
+            final_image_name="model-foo",
+            image_tags=["latest"],
+            dockerfile_path=str(dockerfile),
+            build_context=".",
+        )
+
+        called_cmd = mock_stream.call_args[0][0]
+        assert called_cmd[:3] == ["docker", "buildx", "build"]
+        assert "--cache-from" in called_cmd
+        assert "--cache-to" in called_cmd
+        assert "--load" in called_cmd
+        assert "BASE_IMAGE=model-foo-3-base:latest" in " ".join(called_cmd)
 
     @patch("build_scripts.build_model_image._stream_run")
     def test_respects_custom_tag(self, mock_stream, tmp_path):
