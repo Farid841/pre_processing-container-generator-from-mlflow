@@ -290,7 +290,9 @@ jobs:
                   "diffmaglim": 20.8, "ndethist": 3, "scorr": 12.1,
                   "chinr": 0.98, "sharpnr": 0.01,
                   "sgscore1": 0.7, "distpsnr1": 0.3,
-                  "isdiffpos": "t"
+                  "isdiffpos": "t",
+                  "ra": 10.684, "dec": 41.269,
+                  "jd": 2459995.5, "fid": 1
                 },
                 "prv_candidates": [
                   {"jd": 2459995.5, "magpsf": 19.1, "isdiffpos": "t", "fid": 1},
@@ -319,11 +321,21 @@ jobs:
               "data": [
                 {
                   "objectId": "ZTF21a", "candid": 1,
-                  "candidate": {"rb": 0.9, "drb": 0.85, "magpsf": 19.0, "isdiffpos": "t"}
+                  "candidate": {
+                    "rb": 0.9, "drb": 0.85, "magpsf": 19.0, "diffmaglim": 20.5,
+                    "isdiffpos": "t", "ra": 10.684, "dec": 41.269,
+                    "jd": 2459995.5, "fid": 1
+                  },
+                  "prv_candidates": []
                 },
                 {
                   "objectId": "ZTF21b", "candid": 2,
-                  "candidate": {"rb": 0.1, "drb": 0.05, "magpsf": 18.0, "isdiffpos": "f"}
+                  "candidate": {
+                    "rb": 0.1, "drb": 0.05, "magpsf": 18.0, "diffmaglim": 19.8,
+                    "isdiffpos": "f", "ra": 11.2, "dec": 42.1,
+                    "jd": 2459994.0, "fid": 2
+                  },
+                  "prv_candidates": []
                 }
               ]
             }')
