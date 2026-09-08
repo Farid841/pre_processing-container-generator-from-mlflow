@@ -55,14 +55,20 @@ def _fetch_raw_schema_from_topic(
 
 
 def _fix_spark_schema(schema: dict) -> dict:
-    """Fix the schema published by Spark to the schema topic.
+    """Wrap top-level plain-record fields in a ``[record, null]`` union.
 
-    Spark infers a schema where nested nullable records (like ``candidate``)
-    appear as plain records rather than ``[record, null]`` unions.  The actual
-    Avro wire bytes still contain a union discriminator byte, so reading with
-    the raw Spark schema causes an IndexError in fastavro.  This function wraps
-    any top-level plain-record field in a ``[record, null]`` union so fastavro
-    can decode the bytes correctly.
+    NOT USED. Was written under the assumption that Spark's Avro wire bytes
+    always carry a union discriminator byte for nested nullable records (e.g.
+    ``candidate``), even when the schema published to the schema topic
+    declares them as a plain record. That assumption no longer holds: for the
+    schemas currently published by spark_ztf_transfer.py /
+    spark_ztf_inference_feed.py, the raw schema already matches the wire
+    bytes, and applying this wrapping corrupts every message (fastavro raises
+    ``IndexError: list index out of range`` on the union discriminator it
+    expects but that isn't there). Verified against live topic data before
+    removing the call in fetch_schema_from_topic. Kept here in case a future
+    Spark/schema-converter version reintroduces the mismatch it was meant to
+    fix.
     """
     fixed = copy.deepcopy(schema)
     for field in fixed.get("fields", []):
@@ -99,5 +105,4 @@ def fetch_schema_from_topic(
     RuntimeError
         If no schema message is received within *timeout* seconds.
     """
-    raw = _fetch_raw_schema_from_topic(schema_topic, kafka_config, timeout)
-    return _fix_spark_schema(raw)
+    return _fetch_raw_schema_from_topic(schema_topic, kafka_config, timeout)
