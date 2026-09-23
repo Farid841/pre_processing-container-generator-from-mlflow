@@ -50,3 +50,6 @@ htmlcov/
 # MLflow
 mlruns/
 # preprocessing_mlflow/
+
+# Zensical build output
+/site/
